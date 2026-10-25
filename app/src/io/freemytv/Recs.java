@@ -67,7 +67,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 11;
+    private static final int CACHE_VERSION = 12;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
@@ -863,7 +863,7 @@ final class Recs {
             if (seasons > 0) parts.add(Ui.plural("plural|one:{n} season|other:{n} seasons", seasons));
             JSONObject last = o.optJSONObject("last_episode_to_air");
             long aired = dayAt(last != null ? last.optString("air_date") : o.optString("last_air_date"));
-            if (aired > 0) parts.add(Ui.trf("last episode {date}", "date", Ui.datePattern("format|MMM d, yyyy").format(aired)));
+            if (aired > 0) parts.add(Ui.datePattern("format|MMM d, yyyy").format(aired));   // the last episode's day
         }
         JSONObject wp = o.optJSONObject("watch/providers");
         JSONObject br = wp == null ? null : wp.optJSONObject("results") == null ? null : wp.optJSONObject("results").optJSONObject(REGION);
