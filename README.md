@@ -184,9 +184,10 @@ Each row (Explore, Movies, Shows) starts with three cards; → past the last one
 is looked up only when its row gets to it, so a refresh asks Filmix about a handful of titles, not all of them. A card
 shows TMDB's rating and, for a movie, its year; for a show, the day its last episode aired.
 
-Holding OK on a card opens its menu: *Watch trailer* searches YouTube for the title's trailer in the TV's language, and
-*Already watched* adds it to your Trakt history; the item then turns into five stars to rate it (OK on a star gives it
-whole, OK again half a star less). The rating goes to Trakt once, a moment after the last press.
+Holding OK on a card opens its menu, with the card moved to the row's left end and the menu beside it: *Watch trailer*
+searches YouTube for the title's trailer in the TV's language; *Watched* adds it to your Trakt history, and the item then
+turns into ten stars to rate it (Trakt's own 1 to 10), sent once, a moment after the last press; *Don't recommend* takes
+it off the row and off your Trakt recommendations (Trakt's hidden list, which trakt.tv can undo).
 
 ### Opening a title, not just its app (optional)
 

@@ -156,10 +156,19 @@ final class Recs {
     private volatile boolean light;     // light design: builds only the cards (all three tabs' cards fit in memory)
     private volatile long failedAt, keyStamp, linkRetryAt;
     private volatile String listLanguage = "";   // language used for the saved titles, genres and texts
+    /**
+     * Titles hidden from the rows (their menu's "Don't recommend"), by key: Trakt leaves them out of its recommendations
+     * from then on, and these keep a saved list or another source from bringing them back. Kept apart from the cache,
+     * which a new CACHE_VERSION clears.
+     */
+    private final Set<String> hidden = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final SharedPreferences hiddenPrefs;
 
     private Recs(Context c) {
         context = c;
         cache = c.getSharedPreferences("recs", Context.MODE_PRIVATE);
+        hiddenPrefs = c.getSharedPreferences("recs-hidden", Context.MODE_PRIVATE);
+        hidden.addAll(hiddenPrefs.getStringSet("keys", new HashSet<>()));
         if (cache.getInt("version", 0) != CACHE_VERSION
                 || !Config.RECOMMENDATIONS_APP.equals(cache.getString("recommendationsApp", ""))) {
             cache.edit().clear().putInt("version", CACHE_VERSION)
@@ -243,7 +252,7 @@ final class Recs {
     }
 
     private boolean visible(Pick p, String kind, Map<String, Boolean> have) {
-        return (!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(p.kind))
+        return (!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(p.kind)) && !hidden.contains(key(p))
                 && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)));   // app missing: skip
     }
 
@@ -262,6 +271,34 @@ final class Recs {
         if (count(kind) < shown[r]) lookUp(kind);
         notifyListeners();
         return true;
+    }
+
+    /**
+     * Main thread: the title leaves every row now and for good (its menu's "Don't recommend"); a row left short takes
+     * its next title. False if it was already hidden.
+     */
+    boolean hide(Pick p) {
+        if (!hidden.add(key(p))) return false;
+        saveHidden();
+        synchronized (queue) {
+            for (int i = queue.size() - 1; i >= 0; i--) if (key(queue.get(i)).equals(key(p))) queue.remove(i);
+        }
+        for (String kind : new String[] {null, "movie", "tv"}) {
+            if (count(kind) < shown[row(kind)] && queued(kind)) lookUp(kind);
+        }
+        notifyListeners();
+        return true;
+    }
+
+    /** Main thread: back in its place (Trakt refused to hide it). */
+    void unhide(Pick p) {
+        if (!hidden.remove(key(p))) return;
+        saveHidden();
+        notifyListeners();
+    }
+
+    private void saveHidden() {
+        hiddenPrefs.edit().putStringSet("keys", new HashSet<>(hidden)).apply();
     }
 
     /** The row has more to show: cards already confirmed, or titles still waiting in the queue. */
