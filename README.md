@@ -164,8 +164,10 @@ Free, and it takes two minutes: create an account at [themoviedb.org](https://ww
 
 On Android, `recommendations_app=filmix` uses Filmix's exported Android TV search provider; it does not need a
 Watchmode key or access to Filmix's account credentials. Open Filmix once before the first refresh (and after a
-device restart if search is unavailable). The launcher matches titles conservatively by name, release year and
-movie/series type, and opens Filmix's own search-result card. Ambiguous or missing matches are omitted. Confirmed
+device restart if search is unavailable). The launcher matches titles conservatively by name (Filmix's Russian title
+or its original title), release year and movie/series type, and opens Filmix's own search-result card. A year apart
+(Filmix often lists the premiere's year) counts only when both the Russian and the original titles agree. Ambiguous
+or missing matches are omitted. Confirmed
 matches are cached for up to six hours; if Filmix cannot be queried, it never falls back to Netflix or another app.
 
 ### Your Trakt recommendations (Android, optional)

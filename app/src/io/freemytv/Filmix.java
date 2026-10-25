@@ -37,9 +37,9 @@ final class Filmix {
 
     static String find(Context context, String title, String original, int year, boolean series) throws IOException {
         Set<String> queries = new LinkedHashSet<>();
-        if (title != null && !title.trim().isEmpty()) queries.add(title.trim());
+        if (title != null && !title.trim().isEmpty()) queries.add(FilmixMatch.query(title));
         if (original != null && !original.trim().isEmpty()
-                && !FilmixMatch.normalize(original).equals(FilmixMatch.normalize(title))) queries.add(original.trim());
+                && !FilmixMatch.normalize(original).equals(FilmixMatch.normalize(title))) queries.add(FilmixMatch.query(original));
         for (String query : queries) {
             String match = search(context, query, title, original, year, series);
             if (match != null) return match;
@@ -75,28 +75,39 @@ final class Filmix {
         try (Cursor cursor = context.getContentResolver().query(SEARCH, null, " ?", new String[] {query}, null)) {
             if (cursor == null) throw new IOException(UNAVAILABLE);
             int caption = cursor.getColumnIndexOrThrow(SearchManager.SUGGEST_COLUMN_TEXT_1);
+            int originalCaption = cursor.getColumnIndex(SearchManager.SUGGEST_COLUMN_TEXT_2);   // the original title
             int production = cursor.getColumnIndexOrThrow(SearchManager.SUGGEST_COLUMN_PRODUCTION_YEAR);
             int extra = cursor.getColumnIndexOrThrow(SearchManager.SUGGEST_COLUMN_INTENT_EXTRA_DATA);
+            // Best score wins; two different titles at the best score are ambiguous remakes: omit rather than guess.
             String match = null;
             long matchId = 0;
+            int best = FilmixMatch.NONE;
+            boolean ambiguous = false;
             for (int count = 0; count < 30 && cursor.moveToNext(); count++) {
                 try {
                     JSONObject payload = new JSONObject(cursor.getString(extra));
                     if (!(payload.opt("hasSeries") instanceof Boolean)) continue;
                     int offeredYear = Integer.parseInt(cursor.getString(production));
-                    if (!FilmixMatch.matches(title, original, year, series, cursor.getString(caption),
-                            offeredYear, payload.getBoolean("hasSeries"))) continue;
+                    int score = FilmixMatch.score(title, original, year, series, cursor.getString(caption),
+                            originalCaption < 0 ? null : cursor.getString(originalCaption), offeredYear,
+                            payload.getBoolean("hasSeries"));
+                    if (score == FilmixMatch.NONE || score < best) continue;
                     String safe = payload(payload);
                     if (safe == null) continue;
                     long id = payload.getLong("id");
-                    if (match != null && matchId != id) return null;   // ambiguous remakes: omit rather than guess
+                    if (score == best && matchId != id) {
+                        ambiguous = true;
+                        continue;
+                    }
+                    if (score > best) ambiguous = false;
                     match = safe;
                     matchId = id;
+                    best = score;
                 } catch (org.json.JSONException | NumberFormatException | NullPointerException ignored) {
                     // A malformed suggestion does not invalidate the other search results.
                 }
             }
-            return match;
+            return ambiguous ? null : match;
         }
     }
 

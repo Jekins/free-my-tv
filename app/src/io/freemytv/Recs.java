@@ -62,7 +62,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 7;
+    private static final int CACHE_VERSION = 8;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
@@ -540,7 +540,8 @@ final class Recs {
 
         List<Pick> candidates = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        alternate(candidates, seen, movies, shows, 50);
+        // All of Trakt's recommendations (50 movies, 50 shows) are looked up in Filmix: none is cut before that.
+        alternate(candidates, seen, movies, shows, 100);
 
         if (candidates.size() < 40) {
             String common = "&language=" + lang() + "&include_adult=false&sort_by=popularity.desc"
@@ -579,7 +580,6 @@ final class Recs {
                 }
             }
             confirmed.add(pick);
-            if (confirmed.size() >= 24) break;
         }
         if (confirmed.isEmpty()) throw new IOException("No matching TMDB titles were found in Filmix");
         picks = confirmed;
