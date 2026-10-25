@@ -152,10 +152,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final RectF[] topRects = new RectF[3 + HomeApps.MAX_TOP];
     // The row of picks, as on Apple TV: the focused card is wide and the others tall, each width a spring, and the row
     // scrolls only when the wide card wouldn't fit. → past the last card asks Recs for more; empty cards (slots) hold
-    // their places, softly pulsing, until their titles are confirmed. The widths overshoot a little and spring back,
-    // and each card's height is jelly: it lags the width's changes of speed and wobbles back (cardJelly, a fraction).
-    private final List<Spring> cardFocus = new ArrayList<>(), cardWide = new ArrayList<>(), cardJelly = new ArrayList<>();
-    private static final float JELLY_KICK = 0.24f;   // height per change of the width's speed: about ±2% at a move
+    // their places, softly pulsing, until their titles are confirmed. Each width stretches past its size once and comes
+    // back softly (a spring with its own `back`), the card a little thinner while it's stretched, like jelly.
+    private final List<Spring> cardFocus = new ArrayList<>(), cardWide = new ArrayList<>();
+    private static final float CARD_SQUASH = 0.25f;   // height lost per width stretched past its size: ~1% at a move
     private final Spring rowScroll = new Spring(0.42f, 0.92f, 0), rowNudge = new Spring(0.24f, 0.42f, 0);
     private RectF[] cardRects = new RectF[0];   // each slot at rest (the focused one wide): moving up and down, TalkBack
     private CardText[] cardWords = new CardText[0];
@@ -772,7 +772,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean heroMoving = heroFocus.step(dt);
         boolean topMoving = step(topFocus, dt);
         // The row: lift, widths, scroll and the bump at its end; empty cards pulse while their titles load.
-        boolean cardsMoving = step(cardFocus, dt) | stepWidths(dt) | rowScroll.step(dt) | rowNudge.step(dt)
+        boolean cardsMoving = step(cardFocus, dt) | step(cardWide, dt) | rowScroll.step(dt) | rowNudge.step(dt)
                 | slots > cards.size() | up < fadingUntil;
         if (topMoving) status.invalidate();
         heroMoving |= topMoving | cardsMoving;
@@ -835,19 +835,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static boolean step(List<Spring> springs, float dt) {
         boolean moving = false;
         for (int i = 0; i < springs.size(); i++) moving |= springs.get(i).step(dt);   // no iterator: runs every frame
-        return moving;
-    }
-
-    /** The cards' widths, and their jelly: speeding up thins a card, braking makes it bulge (secondary motion). */
-    private boolean stepWidths(float dt) {
-        boolean moving = false;
-        for (int i = 0; i < cardWide.size(); i++) {
-            Spring width = cardWide.get(i), jelly = cardJelly.get(i);
-            float before = width.velocity;
-            moving |= width.step(dt);
-            jelly.velocity -= JELLY_KICK * (width.velocity - before);
-            moving |= jelly.step(dt);
-        }
         return moving;
     }
 
@@ -2012,7 +1999,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (slots == 0 || tallW == 0) return false;
         int focus = Math.min(cardIndex, slots - 1);
         boolean changed = aim(cardWide, focus, snap);
-        if (snap) for (int i = 0; i < cardJelly.size(); i++) cardJelly.get(i).snap(0);
         float margin = MARGIN * k, left = margin + focus * (tallW + cardGap), right = left + wideW;
         float s = rowScroll.target;
         if (left - s < margin) s = left - margin;
@@ -3159,8 +3145,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void setSlots(int n, boolean reset) {
         while (cardFocus.size() < n) {
             cardFocus.add(new Spring(0.32f, 0.78f, 0));
-            cardWide.add(new Spring(0.48f, 0.6f, 0));    // eases in, overshoots ~9% at 0.3 s, back by 0.5 s
-            cardJelly.add(new Spring(0.2f, 0.32f, 0));   // quick: thins, bulges and is still in 0.3 s
+            cardWide.add(new Spring(0.4f, 0.7f, 0, 0.56f));   // wide in 0.22 s, ~5% over at 0.3 s, then softly back
         }
         if (cardRects.length < n) {
             int size = Math.max(n, cardRects.length * 2);
@@ -3177,7 +3162,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             for (int i = 0; i < cardFocus.size(); i++) {
                 cardFocus.get(i).snap(0);
                 cardWide.get(i).snap(0);
-                cardJelly.get(i).snap(0);
             }
             rowScroll.snap(0);
         }
@@ -3374,15 +3358,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /**
      * Recommendation card: the title's photo (its center at the card's width this frame, from one image big enough for
      * the wide card focused, so it stays sharp and a card that widens keeps the same picture), rounded corners and a
-     * soft shadow; when focused, it grows 5%, rises and lights up its border, and while its width springs its height
-     * wobbles like jelly. Below it, the title; as the card widens,
+     * soft shadow; when focused, it grows 5%, rises and lights up its border, and while its width is stretched past its
+     * size it is a little thinner, like jelly. Below it, the title; as the card widens,
      * the rating and genre · runtime fade in. An empty card (its title still being looked up) pulses softly.
      */
     private void drawLightCard(Canvas c, int i) {
         Recs.Pick p = i < cards.size() ? cards.get(i) : null;
         float v = cardFocus.get(i).value, f = Ui.clamp(v), s = 1 + 0.05f * v;
         float left = cardX[i], bw = cardW[i], bh = L_CARD_H * k, r0 = 18 * k, top = L_CARDS_TOP * k;
-        float ch = bh * (1 + cardJelly.get(i).value);   // the body's jelly height; the words below keep their places
+        float stretch = cardWide.get(i).value, over = stretch - Ui.clamp(stretch);   // past its size: + wider, - narrower
+        float ch = bh * (1 - CARD_SQUASH * over);   // the body's height; the words below keep their places
         float wide = Ui.clamp((bw - tallW) / (wideW - tallW));
         float cx = left + bw / 2, cy = top + bh / 2 - 6 * k * v;
         cell.set(cx - bw * s / 2, cy - ch * s / 2, cx + bw * s / 2, cy + ch * s / 2);
