@@ -95,7 +95,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final long TOAST_MS = 6000, FADE_MS = 800;
     /** Blur radii of the shadow and shadowDeep paints (Shadows needs them to draw the same blur on older TVs). */
     private static final float SHADOW_BLUR = 26, DEEP_BLUR = 30;
-    private static final int SKY = 0, HERO = 1, STATUS = 2, PLATTER = 3, TILES = 4, DRAWER = 5, SHEET = 6, TOAST = 7, MENU = 8, MENU_GLASS = 9, MENU_ITEMS = 10, MENU_SHARP = 11;
+    private static final int SKY = 0, HERO = 1, STATUS = 2, PLATTER = 3, TILES = 4, DRAWER = 5, SHEET = 6, TOAST = 7, MENU = 8, MENU_GLASS = 9, MENU_ITEMS = 10, MENU_SHARP = 11, SKY_IMAGES = 12;
     private static final int Z_STATUS = 0, Z_HERO = 1, Z_SHELF = 2, Z_DRAWER = 3;
     private static final ExecutorService LOADER = Executors.newSingleThreadExecutor();
     // Light design (the L_ constants): title, tab bar, three recommendation cards and the shelf.
@@ -136,7 +136,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         @Override public void hold(int id) { a11yHold(); }
     });
     private final RectF a11yRect = new RectF();
-    private final Layer sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass,
+    private final Layer sky, skyImages, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass,
             menuItemsLayer, toastLayer;
     private int zone = Z_SHELF;
 
@@ -174,7 +174,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private float[] cardX = new float[0], cardW = new float[0];   // where each slot is drawn this frame
     private long[] imageAt = new long[0];     // when each card's photo arrived (0 = not yet): it fades in
     private long fadingUntil;
-    private static final long IMAGE_FADE_MS = 260, FOCUS_REST_MS = 1200;
+    private static final long IMAGE_FADE_MS = 260, FOCUS_REST_MS = 250, BG_FADE_MS = 600;
     private final Path star = new Path();   // the rating's star, 1 unit across, drawn scaled
     private final Runnable focusBackground = this::backgroundFromFocus;
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
@@ -232,6 +232,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int pickIndex, heroSlide = 1;
     private Hero hero, heroFrom;
     private long heroFadeAt, bgFadeAt;
+    private int bgFrames;
     private final Spring heroFocus = new Spring(0.28f, 0.85f, 0);
     private final RectF heroButton = new RectF();
     private Backdrop bgFrom, bgTo;     // null = gradient (no photo)
@@ -287,6 +288,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private TextPaint titlePaint, gridLabel, toastPaint;
     private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint imagePaint = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
+    private final RectF skyRect = new RectF(0, 0, Backdrop.GW, Backdrop.GH);
     private final Paint shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint shadowSoft = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint shadowDeep = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -359,6 +361,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             shadows.dither = dark() > 0.5f;
             switch (kind) {
                 case SKY: drawSky(c); break;
+                case SKY_IMAGES: drawSkyImages(c); break;
                 case HERO: drawLightTop(c); break;
                 case STATUS: drawLightButtons(c); break;
                 case PLATTER: drawPlatter(c); break;
@@ -430,6 +433,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (launcherApps != null) launcherApps.registerCallback(packages, handler);
         setFocusable(true);
         sky = new Layer(a, SKY);
+        skyImages = new Layer(a, SKY_IMAGES);
         heroLayer = new Layer(a, HERO);
         status = new Layer(a, STATUS);
         platter = new Layer(a, PLATTER);
@@ -445,8 +449,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Not on Android 8 to 11: on older GPUs (a Mi Box 3's Mali-450) redrawing and compositing a big layer on every
         // frame cost more than drawing straight to the screen (measured: focus on the picks 33 → 12 ms a frame, the
         // drawer 19 → 17 ms).
-        for (View v : new View[] {heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass, menuItemsLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
-        for (View v : new View[] {sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer,
+        for (View v : new View[] {skyImages, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass, menuItemsLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
+        for (View v : new View[] {sky, skyImages, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer,
                 menuGlass, menuItemsLayer, toastLayer}) {
             v.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);   // TalkBack reads the items (Spoken)
             addView(v);
@@ -639,7 +643,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void invalidateAll() {
-        for (View v : new View[] {sky, heroLayer, status, platter, tiles, drawerLayer}) v.invalidate();
+        for (View v : new View[] {sky, skyImages, heroLayer, status, platter, tiles, drawerLayer}) v.invalidate();
     }
 
     // MARK: - Size and layers
@@ -648,6 +652,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int width = MeasureSpec.getSize(widthSpec), height = MeasureSpec.getSize(heightSpec);
         float kk = width / 1920f;
         measure(sky, width, height);
+        measure(skyImages, Backdrop.GW, Backdrop.GH);
         measure(heroLayer, width, Math.round(790 * kk));
         measure(status, Math.round(1160 * kk), Math.round(240 * kk));
         // Sized to what they draw (the glass and its shadow; the grown tiles and their shadows): smaller layers are
@@ -671,6 +676,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int width = r - l, height = b - t;
         float kk = width / 1920f;
         sky.layout(0, 0, width, height);
+        skyImages.layout(0, 0, Backdrop.GW, Backdrop.GH);
+        skyImages.setPivotX(0);
+        skyImages.setPivotY(0);
+        skyImages.setScaleX(width / (float) Backdrop.GW);
+        skyImages.setScaleY(height / (float) Backdrop.GH);
         place(heroLayer, 0, 0);
         place(status, width - status.getMeasuredWidth(), 0);
         place(platter, 0, Math.round(750 * kk));
@@ -850,6 +860,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean toastFading = tickToast(up);
         boolean heroFading = tickHeroFade(up);
         boolean bgFading = tickBackgroundFade(up);
+        // The glass follows the background on every fourth frame (it changes slowly), the shelf's and the buttons' on
+        // different frames: redrawing both on every frame of the fade took this TV from 51 to 47 frames a second.
+        int glassStep = bgFading ? (bgFadeAt == 0 ? 3 : ++bgFrames % 4) : -1;
+        boolean shelfGlass = glassStep == 0 || glassStep == 3, buttonsGlass = glassStep == 2 || glassStep == 3;
         boolean nightMoving = tickNight(up);
 
         if (drawerMoving || sheetMoving || motionDirty) updateMotion();
@@ -858,12 +872,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // they rise; the drawer is drawn resting in place; the glass shelf is redrawn once the drawer stops, so the
         // glass shows the background where it ended up.
         if (tilesMoving || tilesDirty) tiles.invalidate();
-        if (statusMoving || statusDirty || bgFading) status.invalidate();
+        if (statusMoving || statusDirty || buttonsGlass) status.invalidate();
         if (heroMoving || heroDirty || heroFading) heroLayer.invalidate();
-        if (drawerItemsMoving || drawerDirty || bgFading) drawerLayer.invalidate();
+        if (drawerItemsMoving || drawerDirty || buttonsGlass) drawerLayer.invalidate();
         if (gridMoving || gridDirty) sheetLayer.invalidate();
-        if (drawerMoving || bgFading) sky.invalidate();
-        if (bgFading || (drawerWasMoving && !drawerMoving)) platter.invalidate();
+        if (drawerMoving || bgFading) {
+            sky.invalidate();
+            skyImages.invalidate();
+        }
+        if (shelfGlass || (drawerWasMoving && !drawerMoving)) platter.invalidate();
         drawerWasMoving = drawerMoving;
         tilesDirty = statusDirty = heroDirty = drawerDirty = gridDirty = motionDirty = false;
         if (updateClock()) {
@@ -918,6 +935,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Under the menu's opaque blurred copy nothing needs drawing: transparent, not invisible, so the GPU keeps their
         // layers and the screen comes back without redrawing them.
         sky.setAlpha(menuCovers ? 0 : 1);
+        skyImages.setAlpha(menuCovers ? 0 : 1);
         if (menuCovers) for (View v : new View[] {heroLayer, status, platter, tiles}) v.setAlpha(0);
         float da = home * smoothstep(0.1f, 0.6f, dc);
         drawerLayer.setTranslationY((1 - d) * shift);
@@ -1041,9 +1059,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Swaps the background with a cross-fade (from one image to another, from the gradient to an image, or back). */
     private void showBackdrop(Backdrop b) {
         if (b == bgTo) return;
+        wake();     // idle, the frame loop runs once a second: the fade would be over before its first frame
         long up = SystemClock.uptimeMillis();
         // In the middle of another swap, start from whichever is more visible.
-        if (bgFadeAt == 0 || fadeEase(bgFadeAt, up) >= 0.5f) bgFrom = bgTo;
+        if (bgFadeAt == 0 || fadeEase(bgFadeAt, up, BG_FADE_MS) >= 0.5f) bgFrom = bgTo;
         bgTo = b;
         bgFadeAt = up;
         nightPair = false;
@@ -1156,6 +1175,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         heroDirty = statusDirty = tilesDirty = drawerDirty = true;
         sky.invalidate();
+        skyImages.invalidate();
         platter.invalidate();
     }
 
@@ -1192,7 +1212,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private boolean tickBackgroundFade(long up) {
         if (bgFadeAt == 0) return false;
-        float e = fadeEase(bgFadeAt, up);
+        float e = fadeEase(bgFadeAt, up, BG_FADE_MS);
         if (bgTo != null && bgFrom != null && glassOf(bgFrom) != null && glassOf(bgTo) != null) {
             if (drawerLayer.getVisibility() == VISIBLE || toast != null) {
                 int[] from = frostOf(bgFrom), to = frostOf(bgTo);
@@ -1203,12 +1223,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         if (e >= 1) {
             bgFadeAt = 0;
+            // Two photos in the glass, now all the second one: it stays so (the next change sets the glass anew), with no
+            // image to upload on the frame the fade ends.
+            boolean pair = bgTo != null && bgFrom != null && glassOf(bgFrom) != null && glassOf(bgTo) != null;
             bgFrom = null;
             if (bgTo == null) {
                 neutralGlass();
             } else {
                 scene.setFrost(frostOf(bgTo));
-                if (glassOf(bgTo) != null) scene.setGlassImage(glassOf(bgTo));
+                if (!pair && glassOf(bgTo) != null) scene.setGlassImage(glassOf(bgTo));
             }
         }
         return true;
@@ -1261,9 +1284,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void drawImage(Canvas c, Bitmap image, float alpha) {
+        drawImage(c, image, alpha, screen);
+    }
+
+    private void drawImage(Canvas c, Bitmap image, float alpha, RectF to) {
         if (image == null || alpha <= 0.004f) return;
         imagePaint.setAlpha(Math.round(255 * Math.min(1, alpha)));
-        c.drawBitmap(image, null, screen, imagePaint);
+        c.drawBitmap(image, null, to, imagePaint);
     }
 
     // MARK: - Hero
@@ -3707,8 +3734,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             imagePaint.setColorFilter(null);
             return;
         }
-        long up = SystemClock.uptimeMillis();
-        float e = bgFadeAt == 0 ? 1 : fadeEase(bgFadeAt, up);
         boolean fading = bgFadeAt != 0;
         // Drawer open: the background lightens (by day) or darkens (at night), as a filter on the drawing itself.
         android.graphics.ColorFilter v = veil(tone(0.32f, 0.42f) * Ui.clamp(drawer.value), blend(0xFFFFFFFF, 0xFF000000, night));
@@ -3730,15 +3755,26 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             fill.setShader(null);
             fill.setColorFilter(null);
         }
-        imagePaint.setColorFilter(v);
+    }
+
+    /**
+     * The picks' backgrounds (blurred, Backdrop.GW × GH), in a layer of that size the GPU scales up to the screen: a
+     * crossfade then fills the screen once, not once per image (this TV's GPU spends ~11 ms on each full-screen fill).
+     */
+    private void drawSkyImages(Canvas c) {
+        if (photoBg() != null) return;
+        long up = SystemClock.uptimeMillis();
+        float e = bgFadeAt == 0 ? 1 : fadeEase(bgFadeAt, up, BG_FADE_MS);
+        boolean fading = bgFadeAt != 0;
+        imagePaint.setColorFilter(veil(tone(0.32f, 0.42f) * Ui.clamp(drawer.value), blend(0xFFFFFFFF, 0xFF000000, night)));
         if (fading && bgFrom != null) drawLightImage(c, bgFrom, bgTo == null ? 1 - e : 1);
         if (bgTo != null) drawLightImage(c, bgTo, fading ? e : 1);
         imagePaint.setColorFilter(null);
     }
 
     private void drawLightImage(Canvas c, Backdrop b, float alpha) {
-        if (night < 0.999f || b.nightImage == null) drawImage(c, b.lightImage, alpha);
-        if (night > 0.001f) drawImage(c, b.nightImage, alpha * night);
+        if (night < 0.999f || b.nightImage == null) drawImage(c, b.lightImage, alpha, skyRect);
+        if (night > 0.001f) drawImage(c, b.nightImage, alpha * night, skyRect);
     }
 
     private void drawLightTop(Canvas c) {
