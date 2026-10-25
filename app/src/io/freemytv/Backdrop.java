@@ -29,6 +29,8 @@ final class Backdrop {
     static final int W = ui(1920), H = ui(1080), FW = 192, FH = 108, GW = 480, GH = 270;
     /** The card image: 16:9, as wide as the wide card at its focused size (1.05×), so it covers any card sharp. */
     static final int CARD_W = ui(1092), CARD_H = ui(614);
+    /** A title logo's box on the wide card at its focused size (42% of its width, 24% of its height, then 1.05×). */
+    static final int LOGO_W = ui(460), LOGO_H = ui(112);
 
     private static float uiScale() {
         android.util.DisplayMetrics m = android.content.res.Resources.getSystem().getDisplayMetrics();
@@ -48,6 +50,7 @@ final class Backdrop {
     final Bitmap lightImage;            // by day: the background (the lightened frosted version, scaled up on screen)
     final int[] nightFrost, nightGlass; // at night: frosted (the bottom drawer's frosted glass) and glass, darkened
     final Bitmap nightImage;            // at night: the background (the darkened frosted version)
+    Bitmap logo;                        // the title's logo for its card (logo()), set before it's shared; null: none
 
     private Backdrop(Bitmap image, int[] frost, int[] glass, Bitmap card, int[] light, int[] lightGlass,
                      int[] night, int[] nightGlass) {
@@ -71,15 +74,16 @@ final class Backdrop {
     }
 
     static Backdrop make(Bitmap src, boolean forLight) {
-        return make(src, forLight, false);
+        return make(src, forLight, false, false);
     }
 
     /**
      * `own`: one of your photos (Photos). Its background is less blurred than a pick's; behind the clock, date and
      * weather it is whitened (darkened at night) as much as a pick's, so the text stays readable, then less toward the
-     * right, so it still reads as your photo. The glass and the drawer stay as they are.
+     * right, so it still reads as your photo. The glass and the drawer stay as they are. `shade`: the card's photo
+     * darkens toward its bottom, under the title's logo (card()).
      */
-    static Backdrop make(Bitmap src, boolean forLight, boolean own) {
+    static Backdrop make(Bitmap src, boolean forLight, boolean own, boolean shade) {
         // Cropped to 16:9 at the source's resolution first, then filtered down (no step over 2×).
         Bitmap crop = center(src, (float) W / H);
         if (crop != src) src.recycle();
@@ -93,7 +97,7 @@ final class Backdrop {
         Canvas c = new Canvas(out);
         if (forLight) {
             // Light design: everything comes from the photo without scrims.
-            Bitmap card = card(out, CARD_W, CARD_H);
+            Bitmap card = card(out, CARD_W, CARD_H, shade);
             int[] frost = reduce(out, FW, FH, 3, 3);
             int[] light = whiten(frost.clone(), 0.82f);
             int[] glass = reduce(out, GW, GH, 2, 2);
@@ -187,11 +191,25 @@ final class Backdrop {
     }
 
     /** The center of the photo at the card's aspect ratio, filtered down to the exact size. */
-    private static Bitmap card(Bitmap full, int w, int h) {
+    private static Bitmap card(Bitmap full, int w, int h, boolean shade) {
         Bitmap b = center(full, (float) w / h);
         Bitmap out = Ui.downscale(b, w, h);
         if (b != full && b != out) b.recycle();
-        return out == full ? gpu(full.copy(Bitmap.Config.ARGB_8888, false)) : gpu(out);
+        if (out == full || (shade && !out.isMutable())) {
+            Bitmap copy = out.copy(Bitmap.Config.ARGB_8888, shade);
+            if (out != full) out.recycle();
+            out = copy;
+        }
+        if (shade) {
+            // Under a title's logo, the photo darkens toward its bottom from 35% of its height: only up and down, so a
+            // tall card's crop and the wide one's get the same shade, baked in here instead of drawn on every frame
+            // (over every card, that was ~5 ms of this TV's GPU a frame).
+            Paint p = new Paint(Paint.DITHER_FLAG);
+            p.setShader(new LinearGradient(0, h * 0.35f, 0, h, new int[] {0, black(0.3f), black(0.7f)},
+                    new float[] {0, 0.42f, 1}, Shader.TileMode.CLAMP));
+            new Canvas(out).drawRect(0, h * 0.35f, w, h, p);
+        }
+        return gpu(out);
     }
 
     /** The center of the image at that aspect ratio (the image itself when it already has it). */
@@ -261,6 +279,60 @@ final class Backdrop {
         small.recycle();
         blur(px, w, h, radius, passes);
         return px;
+    }
+
+    /**
+     * A title logo ready for the cards: cut to its visible pixels (TMDB's often have wide transparent margins), scaled to
+     * fit LOGO_W × LOGO_H, and white when it is dark and colorless (a black logo would vanish into the card's shade;
+     * a dark red one still reads). Mipmapped: the tall cards draw it smaller. Null if nothing in it is visible.
+     */
+    static Bitmap logo(Bitmap src) {
+        int w = src.getWidth(), h = src.getHeight();
+        int[] px = new int[w * h];
+        src.getPixels(px, 0, w, 0, 0, w, h);
+        int x0 = w, y0 = h, x1 = -1, y1 = -1;
+        int[] lum = new int[256], sat = new int[256];
+        int solid = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int c = px[y * w + x], a = c >>> 24;
+                if (a <= 24) continue;
+                x0 = Math.min(x0, x);
+                x1 = Math.max(x1, x);
+                y0 = Math.min(y0, y);
+                y1 = Math.max(y1, y);
+                if (a < 128) continue;
+                int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255, max = Math.max(r, Math.max(g, b));
+                lum[(54 * r + 183 * g + 19 * b) >> 8]++;
+                sat[max == 0 ? 0 : (max - Math.min(r, Math.min(g, b))) * 255 / max]++;
+                solid++;
+            }
+        }
+        if (x1 < x0 || solid == 0) return null;
+        boolean white = median(lum, solid) < 90 && median(sat, solid) < 90;   // both under ~35%
+        int cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+        float scale = Math.min(1, Math.min(LOGO_W / (float) cw, LOGO_H / (float) ch));
+        int ow = Math.max(1, Math.round(cw * scale)), oh = Math.max(1, Math.round(ch * scale));
+        Bitmap cut = Bitmap.createBitmap(src, x0, y0, cw, ch);
+        Bitmap out = Bitmap.createScaledBitmap(cut, ow, oh, true);
+        if (out == cut || !out.isMutable()) out = out.copy(Bitmap.Config.ARGB_8888, true);
+        if (white) {
+            int[] o = new int[ow * oh];
+            out.getPixels(o, 0, ow, 0, 0, ow, oh);
+            for (int i = 0; i < o.length; i++) o[i] = (o[i] & 0xFF000000) | 0xFFFFFF;
+            out.setPixels(o, 0, ow, 0, 0, ow, oh);
+        }
+        out.setHasMipMap(true);
+        out.prepareToDraw();
+        return out;
+    }
+
+    private static int median(int[] histogram, int count) {
+        for (int i = 0, seen = 0; i < histogram.length; i++) {
+            seen += histogram[i];
+            if (seen * 2 >= count) return i;
+        }
+        return histogram.length - 1;
     }
 
     /** Box blur of opaque pixels in place: `passes` of radius r in both directions (three look like a Gaussian). */

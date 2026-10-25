@@ -182,7 +182,9 @@ by itself each week; the TMDB key is still needed for the pictures. If Trakt can
 
 Each row (Explore, Movies, Shows) starts with three cards; → past the last one brings three more. With Filmix, a title
 is looked up only when its row gets to it, so a refresh asks Filmix about a handful of titles, not all of them. A card
-shows TMDB's rating and, for a movie, its year; for a show, the day its last episode aired.
+shows TMDB's rating and, for a movie, its year; for a show, the day its last episode aired. Where TMDB has the title's
+logo (in the TV's language, else in English), it is on the card's photo instead of the title below it, as on Apple TV:
+centered on a tall card, at the bottom left of the wide one.
 
 Holding OK on a card opens its menu, with the card moved to the row's left end and the menu beside it: *Watch trailer*
 searches YouTube for the title's trailer in the TV's language; *Watched* adds it to your Trakt history, and the item then

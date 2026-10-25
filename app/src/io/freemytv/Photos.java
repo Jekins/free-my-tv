@@ -140,7 +140,7 @@ final class Photos {
                 Backdrop b = null;
                 try {
                     Bitmap src = BitmapFactory.decodeFile(want.getPath());
-                    if (src != null) b = Backdrop.make(src, true, true);
+                    if (src != null) b = Backdrop.make(src, true, true, false);
                 } catch (RuntimeException | OutOfMemoryError e) {
                     AppLog.w("photos: background from " + want.getName() + ": " + e.getMessage());
                 }

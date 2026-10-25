@@ -299,6 +299,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint sheen = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint logoPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint veil = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint tileFill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -309,6 +310,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private LinearGradient tileGlow, cardSheen;
     private float tileShaderH, cardSheenH;
     private LinearGradient rowSheen, rowRim;
+    private final RectF logoRect = new RectF();
     private final Paint starPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private android.graphics.ColorFilter veilFilter;
     private float veilAmount = -1;
@@ -3970,8 +3972,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * Recommendation card: the title's photo (its center at the card's width this frame, from one image big enough for
      * the wide card focused, so it stays sharp and a card that widens keeps the same picture), rounded corners and a
      * soft shadow; when focused, it grows 5%, rises and lights up its border, and while its width is stretched past its
-     * size it is a little thinner, like jelly. Below it, the title; as the card widens,
-     * the rating and genre · runtime fade in. An empty card (its title still being looked up) pulses softly.
+     * size it is a little thinner, like jelly. On it, the title's logo when TMDB has one (drawLogo); else, below it, the
+     * title. As the card widens, the rating and year · genre · runtime fade in below. An empty card (its title still being
+     * looked up) pulses softly.
      */
     private void drawLightCard(Canvas c, int i) {
         Recs.Pick p = i < cards.size() ? cards.get(i) : null;
@@ -4006,6 +4009,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             coverImage(c, b.card, b.cardShader, cell, r);
             imageFill.setAlpha(255);
         }
+        Bitmap logo = shown > 0 ? b.logo : null;
+        if (logo != null) drawLogo(c, logo, cx, cy, bw, ch, s, wide, shown);
         if (f > 0.01f) {
             int alpha = Math.round(255 * f);
             c.save();
@@ -4026,11 +4031,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         CardText t = p == null ? null : cardWords[i];
         if (t == null) return;
-        // The title: cut for its width at rest; while the card changes width, the wide one, clipped to the card.
+        // The title, unless the logo says it (the details then take its line): cut for its width at rest; while the card
+        // changes width, the wide one, clipped to the card.
         float base = top + bh + 46 * k;
-        if (wide > 0.999f || wide < 0.001f) {
+        if (logo == null && (wide > 0.999f || wide < 0.001f)) {
             c.drawText(wide > 0.5f ? t.wideTitle : t.tallTitle, left, base, lCardTitle);
-        } else {
+        } else if (logo == null) {
             c.save();
             c.clipRect(left, base - lCardTitle.getTextSize() * 1.2f, left + bw, base + lCardTitle.getTextSize() * 0.4f);
             c.drawText(t.wideTitle, left, base, lCardTitle);
@@ -4038,7 +4044,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         float details = smoothstep(0.55f, 1, wide);
         if (details < 0.01f || (t.meta.isEmpty() && t.rating.isEmpty())) return;
-        float metaBase = top + bh + 80 * k, x = left;
+        float metaBase = logo != null ? base : top + bh + 80 * k, x = left;
         int metaColor = lCardMeta.getColor();
         lCardMeta.setColor(Ui.alpha(metaColor, details));
         if (!t.rating.isEmpty()) {
@@ -4055,6 +4061,26 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         if (!t.meta.isEmpty()) c.drawText(t.meta, x, metaBase, lCardMeta);
         lCardMeta.setColor(metaColor);
+    }
+
+    /**
+     * The title's logo on its card (whose photo darkens toward the bottom: Backdrop.card): on a tall card centered near
+     * its bottom (82% of its width × 20% of its height at most), on the wide one at its bottom left (42% × 24%), moving
+     * and growing between the two as the card widens. Drawn in the card's own transform, so it follows the focus's growth
+     * and the jelly; the bitmap is the wide size's (Backdrop.logo), mipmapped for the tall cards.
+     */
+    private void drawLogo(Canvas c, Bitmap logo, float cx, float cy, float bw, float ch, float s, float wide, float alpha) {
+        c.save();
+        c.translate(cx, cy);
+        c.scale(s, s);
+        float boxW = tallW * 0.82f + (wideW * 0.42f - tallW * 0.82f) * wide, boxH = L_CARD_H * k * (0.2f + 0.04f * wide);
+        float fit = Math.min(boxW / logo.getWidth(), boxH / logo.getHeight());
+        float lw = logo.getWidth() * fit, lh = logo.getHeight() * fit, pad = (26 + 8 * wide) * k;
+        float lx = -lw / 2 + (-bw / 2 + pad + lw / 2) * wide;   // centered, then at the left as the card widens
+        logoRect.set(lx, ch / 2 - pad - lh, lx + lw, ch / 2 - pad);
+        logoPaint.setAlpha(Math.round(255 * alpha));
+        c.drawBitmap(logo, null, logoRect, logoPaint);
+        c.restore();
     }
 
     /**
