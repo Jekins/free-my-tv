@@ -152,8 +152,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final RectF[] topRects = new RectF[3 + HomeApps.MAX_TOP];
     // The row of picks, as on Apple TV: the focused card is wide and the others tall, each width a spring, and the row
     // scrolls only when the wide card wouldn't fit. → past the last card asks Recs for more; empty cards (slots) hold
-    // their places, softly pulsing, until their titles are confirmed. Each width stretches past its size once and comes
-    // back softly (a spring with its own `back`), the card a little thinner while it's stretched, like jelly.
+    // their places, softly pulsing, until their titles are confirmed. The focused card stretches past its size once and
+    // comes back softly (a spring with its own `back`), a little thinner meanwhile, squeezing the gaps after it.
     private final List<Spring> cardFocus = new ArrayList<>(), cardWide = new ArrayList<>();
     private static final float CARD_SQUASH = 0.25f;   // height lost per width stretched past its size: ~1% at a move
     private final Spring rowScroll = new Spring(0.42f, 0.92f, 0), rowNudge = new Spring(0.24f, 0.42f, 0);
@@ -3295,16 +3295,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (i == tab) lTabOn.setColor(blend(tone(L_INK, WHITE), L_INK, focus));   // always dark on the white pill
             c.drawText(tabs()[i], r.centerX() - p.measureText(tabs()[i]) / 2, r.centerY() + Ui.halfCap(p), p);
         }
-        // The row, from each card's width this frame; what is off screen isn't drawn, and the lifted card goes last.
-        float x = MARGIN * k - rowScroll.value + rowNudge.value, reach = 60 * k;
+        // The row, from each card's width this frame (never under the tall one); what a card stretches past its size
+        // comes out of the two gaps after it, like jelly: the next card moves half as far, the one after it not at all.
+        // What is off screen isn't drawn, and the lifted card goes last.
+        float x = MARGIN * k - rowScroll.value + rowNudge.value, reach = 60 * k, delta = wideW - tallW, before = 0;
         int top = -1;
         for (int i = 0; i < slots; i++) {
-            float v = cardFocus.get(i).value;
+            float v = cardFocus.get(i).value, wide = cardWide.get(i).value, over = delta * Math.max(0, wide - 1);
             if (v > 0.02f && (top < 0 || v > cardFocus.get(top).value)) top = i;
             cardX[i] = x;
-            // Unclamped: the card that shrinks springs as far under as the other over, so the rest of the row stays put.
-            cardW[i] = Math.max(0.6f * tallW, tallW + (wideW - tallW) * cardWide.get(i).value);
-            x += cardW[i] + cardGap;
+            cardW[i] = tallW + delta * Math.max(0, wide);
+            x += cardW[i] + cardGap - (over + before) / 2;
+            before = over;
         }
         for (int i = 0; i < slots; i++) {
             if (i != top && cardX[i] + cardW[i] > -reach && cardX[i] < w + reach) drawLightCard(c, i);
@@ -3366,7 +3368,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         Recs.Pick p = i < cards.size() ? cards.get(i) : null;
         float v = cardFocus.get(i).value, f = Ui.clamp(v), s = 1 + 0.05f * v;
         float left = cardX[i], bw = cardW[i], bh = L_CARD_H * k, r0 = 18 * k, top = L_CARDS_TOP * k;
-        float stretch = cardWide.get(i).value, over = stretch - Ui.clamp(stretch);   // past its size: + wider, - narrower
+        float over = Math.max(0, cardWide.get(i).value - 1);   // how far its width is stretched past the wide one
         float ch = bh * (1 - CARD_SQUASH * over);   // the body's height; the words below keep their places
         float wide = Ui.clamp((bw - tallW) / (wideW - tallW));
         float cx = left + bw / 2, cy = top + bh / 2 - 6 * k * v;
@@ -3415,10 +3417,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         CardText t = p == null ? null : cardWords[i];
         if (t == null) return;
-        // The title: cut for its width at rest; while the card changes width (or springs under it), the wide one, clipped
-        // to the card.
+        // The title: cut for its width at rest; while the card changes width, the wide one, clipped to the card.
         float base = top + bh + 46 * k;
-        if (wide > 0.999f || (wide < 0.001f && bw >= tallW)) {
+        if (wide > 0.999f || wide < 0.001f) {
             c.drawText(wide > 0.5f ? t.wideTitle : t.tallTitle, left, base, lCardTitle);
         } else {
             c.save();
