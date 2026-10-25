@@ -21,7 +21,8 @@ import java.util.List;
 
 /**
  * Trakt API client: personal recommendations (OAuth) and public user lists (client ID only).
- * List fetching stays so Couchmoney-style slugs still work if OAuth is not set up.
+ * List fetching stays so Couchmoney-style slugs still work if OAuth is not set up. The tokens come built into the app
+ * (tools/trakt_login.py) or from signing in on the TV (Home Settings → Trakt), which wins until a build brings others.
  */
 final class Trakt {
     static final class Item {
@@ -49,6 +50,9 @@ final class Trakt {
     private static String refreshToken = "";
     private static long expiresAt;
     private static String baked = "";
+    private static String user = "";        // the signed-in person's name on Trakt, for the settings ("" = not known)
+    private static String session = "";     // one sign-in: a new one fetches the picks again (Recs)
+    private static boolean signedOut;       // signed out on the TV: the tokens built into the app stay unused
 
     private Trakt() {}
 
@@ -69,6 +73,134 @@ final class Trakt {
             loadTokens();
             return hasKey() && (!accessToken.isEmpty() || !refreshToken.isEmpty());
         }
+    }
+
+    /** Who the picks come from: "" when nobody is signed in; changes with each sign-in (Recs fetches again). */
+    static String account() {
+        synchronized (LOCK) {
+            loadTokens();
+            return hasKey() && (!accessToken.isEmpty() || !refreshToken.isEmpty()) ? session : "";
+        }
+    }
+
+    /** The signed-in person's name on Trakt, "" if not known yet (see {@link #refreshUser}). */
+    static String user() {
+        synchronized (LOCK) {
+            loadTokens();
+            return user;
+        }
+    }
+
+    /** Asks Trakt who is signed in (network: never on the main thread). */
+    static void refreshUser() {
+        if (!hasOAuth()) return;
+        try {
+            String name = fetchUser();
+            synchronized (LOCK) {
+                user = name;
+                saveTokens();
+            }
+        } catch (Exception e) {
+            AppLog.w("Trakt user: " + e.getMessage());
+        }
+    }
+
+    private static String fetchUser() throws IOException, org.json.JSONException {
+        JSONObject u = new JSONObject(get("/users/settings", true)).optJSONObject("user");
+        if (u == null) return "";
+        String name = u.isNull("name") ? "" : u.optString("name").trim();
+        return name.isEmpty() ? u.optString("username") : name;
+    }
+
+    /** Trakt's sign-in for TVs: a short code that the person enters at Trakt's address, on a phone or a computer. */
+    static final class Device {
+        final String code, userCode, url;
+        final long intervalMs, expiresAt;   // expiresAt: SystemClock.elapsedRealtime()
+
+        Device(String code, String userCode, String url, long intervalMs, long expiresAt) {
+            this.code = code;
+            this.userCode = userCode;
+            this.url = url;
+            this.intervalMs = intervalMs;
+            this.expiresAt = expiresAt;
+        }
+    }
+
+    static final int WAITING = 0, SIGNED_IN = 1, EXPIRED = 2, SLOW_DOWN = 3;
+
+    /** Asks Trakt for a code to show (network: never on the main thread). */
+    static Device startSignIn() throws IOException {
+        String clientId = Config.TRAKT_CLIENT_ID.trim();
+        if (clientId.isEmpty()) throw new IOException("no Trakt client ID");
+        int[] status = new int[1];
+        JSONObject o = post(AUTH + "/oauth/device/code", body("client_id", clientId), clientId, status);
+        if (status[0] != 200 || o.optString("device_code").isEmpty()) throw new IOException("HTTP " + status[0]);
+        String url = o.optString("verification_url");
+        return new Device(o.optString("device_code"), o.optString("user_code"),
+                url.isEmpty() ? "https://trakt.tv/activate" : url, Math.max(1, o.optInt("interval", 5)) * 1000L,
+                android.os.SystemClock.elapsedRealtime() + Math.max(60, o.optInt("expires_in", 600)) * 1000L);
+    }
+
+    /**
+     * One check, every `intervalMs`: has the person entered the code? Signed in, the tokens are saved here (over the
+     * ones built into the app) and the picks come from this account. Network: never on the main thread.
+     */
+    static int checkSignIn(Device d) throws IOException {
+        if (android.os.SystemClock.elapsedRealtime() > d.expiresAt) return EXPIRED;
+        String clientId = Config.TRAKT_CLIENT_ID.trim();
+        int[] status = new int[1];
+        JSONObject o = post(AUTH + "/oauth/device/token", body("code", d.code, "client_id", clientId), clientId, status);
+        switch (status[0]) {
+            case 200:
+                synchronized (LOCK) {
+                    loadTokens();
+                    applyToken(o);
+                    signedOut = false;
+                    user = "";
+                    session = "device-" + o.optLong("created_at", System.currentTimeMillis() / 1000L);
+                    saveTokens();
+                }
+                refreshUser();
+                return SIGNED_IN;
+            case 400: return WAITING;       // not entered yet
+            case 429: return SLOW_DOWN;     // asked too often
+            case 404: case 409: case 410: case 418: return EXPIRED;   // unknown, already used, expired or refused
+            default: throw new IOException("HTTP " + status[0]);
+        }
+    }
+
+    /** Signs out on the TV (and tells Trakt, if it answers): the picks no longer come from the account. */
+    static void signOut() {
+        String token;
+        synchronized (LOCK) {
+            loadTokens();
+            token = accessToken;
+            accessToken = refreshToken = user = session = "";
+            expiresAt = 0;
+            signedOut = true;
+            try {
+                saveTokens();
+            } catch (IOException e) {
+                AppLog.w("Trakt sign-out: " + e.getMessage());
+            }
+        }
+        String clientId = Config.TRAKT_CLIENT_ID.trim();
+        if (token.isEmpty() || clientId.isEmpty()) return;
+        try {
+            post(AUTH + "/oauth/revoke", body("token", token, "client_id", clientId), clientId, new int[1]);
+        } catch (IOException e) {
+            AppLog.w("Trakt revoke: " + e.getMessage());
+        }
+    }
+
+    private static JSONObject body(String... pairs) throws IOException {
+        JSONObject o = new JSONObject();
+        try {
+            for (int i = 0; i + 1 < pairs.length; i += 2) o.put(pairs[i], pairs[i + 1]);
+        } catch (org.json.JSONException e) {
+            throw new IOException("Trakt request body");
+        }
+        return o;
     }
 
     /**
@@ -146,19 +278,23 @@ final class Trakt {
     }
 
     private static JSONArray getArray(String path, boolean oauth) throws IOException, org.json.JSONException {
+        return new JSONArray(get(path, oauth));
+    }
+
+    /** The answer's text; with `oauth`, a refused token is refreshed once and the request made again. */
+    private static String get(String path, boolean oauth) throws IOException {
         String clientId = Config.TRAKT_CLIENT_ID.trim();
         if (clientId.isEmpty()) throw new IOException("no Trakt client ID");
         String token = oauth ? access(false) : "";
         try {
-            return getArrayOnce(path, clientId, token);
+            return getOnce(path, clientId, token);
         } catch (IOException e) {
             if (!oauth || e.getMessage() == null || !e.getMessage().contains("HTTP 401")) throw e;
-            return getArrayOnce(path, clientId, access(true));
+            return getOnce(path, clientId, access(true));
         }
     }
 
-    private static JSONArray getArrayOnce(String path, String clientId, String token)
-            throws IOException, org.json.JSONException {
+    private static String getOnce(String path, String clientId, String token) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(API + path).openConnection();
         c.setConnectTimeout(8000);
         c.setReadTimeout(12000);
@@ -172,7 +308,7 @@ final class Trakt {
             if (code == 401 || code == 403) throw new IOException("Trakt rejected credentials (HTTP " + code + ")");
             if (code == 404) throw new IOException("Trakt not found (HTTP 404): " + path);
             if (code != 200) throw new IOException("Trakt returned HTTP " + code);
-            return new JSONArray(read(c.getInputStream()));
+            return read(c.getInputStream());
         } finally {
             c.disconnect();
         }
@@ -222,6 +358,14 @@ final class Trakt {
     }
 
     private static JSONObject postJson(String url, JSONObject body, String clientId) throws IOException {
+        int[] status = new int[1];
+        JSONObject o = post(url, body, clientId, status);
+        if (status[0] != 200) throw new IOException("Trakt auth HTTP " + status[0]);
+        return o;
+    }
+
+    /** POSTs JSON; `status` gets the HTTP code, and the answer is its JSON (empty when it has none). */
+    private static JSONObject post(String url, JSONObject body, String clientId, int[] status) throws IOException {
         byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(8000);
@@ -237,11 +381,11 @@ final class Trakt {
         }
         try {
             int code = c.getResponseCode();
+            status[0] = code;
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
             String text = in == null ? "" : read(in);
-            if (code != 200) throw new IOException("Trakt auth HTTP " + code);
             try {
-                return new JSONObject(text);
+                return text.trim().startsWith("{") ? new JSONObject(text) : new JSONObject();
             } catch (org.json.JSONException e) {
                 throw new IOException("Trakt auth returned invalid JSON");
             }
@@ -264,8 +408,11 @@ final class Trakt {
                     accessToken = o.optString("access_token");
                     refreshToken = o.optString("refresh_token");
                     expiresAt = o.optLong("expires_at");
+                    user = o.optString("user");
+                    session = o.optString("session", nowBaked);
+                    signedOut = o.optBoolean("signed_out");
                     baked = nowBaked;
-                    if (!accessToken.isEmpty() || !refreshToken.isEmpty()) return;
+                    if (signedOut || !accessToken.isEmpty() || !refreshToken.isEmpty()) return;
                 }
             } catch (Exception ignored) {
             }
@@ -285,6 +432,9 @@ final class Trakt {
         refreshToken = Config.TRAKT_REFRESH_TOKEN.trim();
         expiresAt = 0;
         baked = bakedStamp();
+        user = "";
+        session = baked;
+        signedOut = false;
     }
 
     private static String bakedStamp() {
@@ -300,6 +450,9 @@ final class Trakt {
             o.put("refresh_token", refreshToken);
             o.put("expires_at", expiresAt);
             o.put("baked", bakedStamp());
+            o.put("user", user);
+            o.put("session", session);
+            o.put("signed_out", signedOut);
         } catch (org.json.JSONException e) {
             throw new IOException("Trakt token save");
         }

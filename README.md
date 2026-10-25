@@ -174,10 +174,14 @@ matches are cached for up to six hours; if Filmix cannot be queried, it never fa
 
 The picks can come from [Trakt](https://trakt.tv)'s recommendations for your account (movies and shows from what you
 rated and watched) instead of what's trending. Make an app at [Trakt → Settings → Apps](https://app.trakt.tv/settings/apps)
-with the redirect URI `urn:ietf:wg:oauth:2.0:oob`, paste its Client ID after `trakt_client_id=`, then run
-`python3 tools/trakt_login.py`: it shows a code to enter on Trakt's site and saves the tokens in `config.properties`.
-Build and install again. The TV refreshes the token by itself each week; the TMDB key is still needed for the
-pictures. If Trakt can't be reached, the picks come from `trakt_user`'s public lists (Couchmoney's), then from TMDB.
+with the redirect URI `urn:ietf:wg:oauth:2.0:oob` and paste its Client ID after `trakt_client_id=`. Then sign in on
+the TV (*Free My TV* → *Home Settings* → *Trakt*: it shows a code to enter at trakt.tv/activate on a phone), or before
+building with `python3 tools/trakt_login.py`, which saves the tokens in `config.properties`. The TV refreshes the token
+by itself each week; the TMDB key is still needed for the pictures. If Trakt can't be reached, the picks come from
+`trakt_user`'s public lists (Couchmoney's), then from TMDB.
+
+Each row (Explore, Movies, Shows) starts with three cards; → past the last one brings three more. With Filmix, a title
+is looked up only when its row gets to it, so a refresh asks Filmix about a handful of titles, not all of them.
 
 ### Opening a title, not just its app (optional)
 

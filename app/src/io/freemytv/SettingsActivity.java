@@ -139,7 +139,7 @@ public class SettingsActivity extends Activity {
 
     static final class SettingsView extends View implements Choreographer.FrameCallback {
         private static final int MAIN = 0, HOME_CHOICE = 1, HOME_SETTINGS = 2, REMOTE_KEYS = 3, PICKER = 4, SHELF_EDIT = 5,
-                POWER = 6;
+                POWER = 6, TRAKT = 7;
         private static final float LIST_ROW_H = 68, LIST_ROW_GAP = 6;
         private static final int PICK_VISIBLE = 9;
         private static final float LIST_X = 1000, LIST_R = 1824, LIST_TOP = 186, ROW_GAP = 8, CHOICE_H = 104;
@@ -184,7 +184,16 @@ public class SettingsActivity extends Activity {
         private int w, h;
         private float k = 1;
         private Paint title, subtitle, version, rowLabel, rowValue, rowSub, header, cellLabel, cellValue, warn, spinner, white, shadow;
+        private Paint traktHeading, traktUrl, traktCode, traktState;
         private TextPaint notice;
+        // Trakt sign-in (TRAKT): the code Trakt gave, what is happening, and which attempt late answers belong to.
+        private Trakt.Device traktDevice;
+        private String traktStatus = "", traktUser = "";
+        private boolean traktWaiting, traktIn;
+        private int traktRun;
+        private StaticLayout traktAbout;
+        private int traktAboutGeneration = -1;
+        private final RectF traktCard = new RectF();
 
         private final Runnable poll = new Runnable() {
             @Override public void run() {
@@ -193,6 +202,8 @@ public class SettingsActivity extends Activity {
                 sleepLeft = SleepTimer.minutesLeft(getContext());
                 hasKey = Recs.hasKey(getContext());
                 recs = Recs.status(getContext());
+                traktIn = Trakt.hasOAuth();
+                traktUser = traktIn ? Trakt.user() : "";
                 boolean nowBusy = !busyText().isEmpty();
                 if (nowBusy) pendingAt = 0;
                 // What can change the reasons away from a key: a switch (or the watchdog's revert) and the overlay's and the
@@ -285,6 +296,10 @@ public class SettingsActivity extends Activity {
                     return pickLabels.get(at) + (at == pickCurrent ? Ui.tr(", selected") : "")
                             + ", " + Ui.trf("{i} of {n}", "i", at + 1, "n", pickLabels.size());
                 }
+                case TRAKT:
+                    if (traktDevice == null) return "Trakt. " + traktStatus;
+                    return "Trakt. " + Ui.tr("Your Trakt recommendations become the home screen's picks. On your phone or computer, open the address below and enter the code.")
+                            + " " + shortUrl(traktDevice.url) + ". " + TextUtils.join(" ", traktDevice.userCode.split("")) + ". " + traktStatus;
                 case SHELF_EDIT: {
                     int at = pickScroll + row;
                     if (at >= shelfRows.size()) return "";
@@ -310,6 +325,9 @@ public class SettingsActivity extends Activity {
             } else if (screen == HOME_CHOICE) {
                 top = LIST_TOP + 20 + row * (CHOICE_H + ROW_GAP);
                 height = CHOICE_H;
+            } else if (screen == TRAKT) {
+                focusBox.set(traktCard);
+                return focusBox;
             } else {
                 top = LIST_TOP + 20 + row * (LIST_ROW_H + LIST_ROW_GAP);
                 height = LIST_ROW_H;
@@ -322,6 +340,7 @@ public class SettingsActivity extends Activity {
             if (running) return;
             running = true;
             whyRows = null;
+            if (screen == TRAKT) startTrakt();
             startedAt = SystemClock.uptimeMillis();
             lastNanos = 0;
             handler.post(poll);
@@ -332,6 +351,7 @@ public class SettingsActivity extends Activity {
 
         void pause() {
             running = false;
+            traktRun++;   // no more checks with the screen away: coming back asks for a new code
             handler.removeCallbacks(poll);
             Choreographer.getInstance().removeFrameCallback(this);
         }
@@ -369,6 +389,14 @@ public class SettingsActivity extends Activity {
             cellValue.setTextAlign(Paint.Align.RIGHT);
             warn = Ui.text(Ui.regular, 23 * k, AMBER);
             notice = new TextPaint(Ui.text(Ui.regular, 23 * k, 0xB3FFFFFF));
+            traktHeading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
+            traktUrl = Ui.text(Ui.semibold, 34 * k, 0x991C1C1E);
+            traktUrl.setTextAlign(Paint.Align.CENTER);
+            traktCode = Ui.numbers(Ui.displaySemibold, 96 * k, INK);
+            traktCode.setTextAlign(Paint.Align.CENTER);
+            traktCode.setLetterSpacing(0.12f);
+            traktState = Ui.text(Ui.medium, 28 * k, 0xF2FFFFFF);
+            traktAboutGeneration = -1;
             spinner = new Paint(Paint.ANTI_ALIAS_FLAG);
             spinner.setStyle(Paint.Style.STROKE);
             spinner.setStrokeCap(Paint.Cap.ROUND);
@@ -401,6 +429,7 @@ public class SettingsActivity extends Activity {
                 case PICKER: return Math.min(PICK_VISIBLE, pickLabels.size());
                 case SHELF_EDIT: return Math.min(PICK_VISIBLE, shelfRows.size());
                 case POWER: return powerRows().length;
+                case TRAKT: return 1;
                 default: return Prefs.KEYS.length;
             }
         }
@@ -430,6 +459,7 @@ public class SettingsActivity extends Activity {
             c.drawText(versionName(getContext()), cx, 704 * k, version);
 
             if (screen == MAIN) drawMain(c, seconds); else if (screen == HOME_CHOICE) drawChoice(c); else if (screen == PICKER) drawPicker(c); else if (screen == SHELF_EDIT) drawShelfEditor(c);
+            else if (screen == TRAKT) drawTrakt(c, seconds);
             else drawList(c);
         }
 
@@ -686,6 +716,11 @@ public class SettingsActivity extends Activity {
                             } else if (screen == PICKER) {
                                 focus = pickFor - 1;
                                 screen = REMOTE_KEYS;
+                            } else if (screen == TRAKT) {
+                                traktRun++;   // the code is dropped: its checks stop
+                                pickScroll = 0;
+                                focus = TRAKT_ROW;
+                                screen = HOME_SETTINGS;
                             } else {
                                 focus = screen == HOME_SETTINGS ? 2 : screen == SHELF_EDIT ? (editingTop ? 4 : 3)
                                         : screen == REMOTE_KEYS ? 5 : screen == POWER ? 6 : 0;
@@ -705,10 +740,10 @@ public class SettingsActivity extends Activity {
         // MARK: - Home Settings and Remote Buttons
 
         private static final String[] UNITS = {"auto", "C", "F"}, THEMES = {"auto", "light", "dark", "photo"};
-        /** Home Settings: language, temperature, theme, my photos, sounds, watch from the screensaver, weather, city, forecast,
-         *  now playing, quotes, then one row per coin. */
-        private static final int PHOTOS_ROW = 3, SAVER_ROW = 5, WEATHER_ROW = 6, CITY_ROW = 7, FORECAST_ROW = 8, PLAYING_ROW = 9,
-                QUOTES_ROW = 10, COIN_ROWS = 11;
+        /** Home Settings: language, temperature, theme, my photos, sounds, watch from the screensaver, Trakt, weather, city,
+         *  forecast, now playing, quotes, then one row per coin. */
+        private static final int PHOTOS_ROW = 3, SAVER_ROW = 5, TRAKT_ROW = 6, WEATHER_ROW = 7, CITY_ROW = 8, FORECAST_ROW = 9,
+                PLAYING_ROW = 10, QUOTES_ROW = 11, COIN_ROWS = 12;
         /** Home Settings rows on screen at once (what fits above the hints at 1080p); a longer list scrolls. */
         private static final int SETTINGS_VISIBLE = 10;
 
@@ -724,6 +759,7 @@ public class SettingsActivity extends Activity {
             l.add(Ui.tr("My Photos"));
             l.add(Ui.tr("Navigation sounds"));
             l.add(Ui.tr("Watch from the screensaver"));
+            l.add("Trakt");
             l.add(Ui.tr("Weather widget"));
             l.add(Ui.tr("City"));
             l.add(Ui.tr("Forecast"));
@@ -751,6 +787,7 @@ public class SettingsActivity extends Activity {
                     : Prefs.photos() ? Ui.plural("plural|one:{n} photo|other:{n} photos", photos) : Ui.tr("Off");
             v[4] = onOff(Prefs.sounds());
             v[SAVER_ROW] = onOff(Prefs.saverWatch());
+            v[TRAKT_ROW] = !traktIn ? Ui.tr("Sign in") : traktUser.isEmpty() ? Ui.tr("Signed in") : traktUser;
             v[WEATHER_ROW] = onOff(Prefs.weather());
             v[CITY_ROW] = !cityStatus.isEmpty() ? cityStatus : Prefs.city().isEmpty() ? "—" : Prefs.city();
             v[FORECAST_ROW] = Prefs.forecast().equals("days") ? Ui.tr("Next days") : Ui.tr("Next hours");
@@ -805,6 +842,8 @@ public class SettingsActivity extends Activity {
                     String need = need(r);
                     whyRows[r] = screen == HOME_SETTINGS && pickScroll + r >= COIN_ROWS && !Prefs.quotes()
                             ? Ui.tr("Turn on the Quotes widget to pick its coins.")
+                            : screen == HOME_SETTINGS && pickScroll + r == TRAKT_ROW && !Trakt.hasKey()
+                            ? Ui.tr("Needs trakt_client_id in config.properties: see the README.")
                             : need == null ? null : Capabilities.missing(getContext(), need);
                 }
             }
@@ -1029,6 +1068,7 @@ public class SettingsActivity extends Activity {
                 case SAVER_ROW: Prefs.setSaverWatch(!Prefs.saverWatch()); break;
                 case WEATHER_ROW: Prefs.setWeather(!Prefs.weather()); break;
                 case CITY_ROW: return;
+                case TRAKT_ROW: return;   // OK signs in or out
                 case FORECAST_ROW:   // both are in memory: nothing to fetch
                     Prefs.setForecast(Prefs.forecast().equals("days") ? "hours" : "days");
                     return;
@@ -1311,6 +1351,8 @@ public class SettingsActivity extends Activity {
             c.drawText(where + (screen == HOME_SETTINGS && from + focus == PHOTOS_ROW ? (Photos.files(getContext()).isEmpty()
                     ? Ui.tr("Send them from a computer: see “Your own photos” in the README.")
                     : Ui.tr("OK removes them; the arrows turn them on or off."))
+                    : screen == HOME_SETTINGS && from + focus == TRAKT_ROW && unavailable(focus) == null
+                    ? (traktIn ? Ui.tr("OK signs out of Trakt.") : Ui.tr("OK signs in: your Trakt recommendations become the picks."))
                     : screen == POWER && powerRow() != P_SHOW && unavailable(focus) == null ? Ui.tr("OK opens the list. ← → change the value.")
                     : Ui.tr("OK or the arrows change the value.")), LIST_X * k + 30 * k, hy, hint);
             if (keys) {
@@ -1323,6 +1365,166 @@ public class SettingsActivity extends Activity {
                         : RemoteKeys.supported() ? Ui.tr("Disney and Globoplay: the TV itself controls those buttons.")
                         : Ui.tr("TCL remote buttons: on this TV they work as always."), LIST_X * k + 30 * k, hy + 38 * k, hint);
             }
+        }
+
+        // MARK: - Trakt sign-in (Home Settings → Trakt)
+
+        /** Asks Trakt for a code, then checks at Trakt's pace whether it was entered (each attempt has its own run). */
+        private void startTrakt() {
+            int run = ++traktRun;
+            traktDevice = null;
+            traktWaiting = true;
+            traktStatus = Ui.tr("Getting a code…");
+            invalidate();
+            new Thread(() -> {
+                Trakt.Device d = null;
+                String error = null;
+                try {
+                    d = Trakt.startSignIn();
+                } catch (Exception e) {
+                    error = e.getMessage();
+                    AppLog.w("Trakt sign-in: " + error);
+                }
+                Trakt.Device device = d;
+                String message = error;
+                handler.post(() -> {
+                    if (run != traktRun) return;
+                    if (device == null) {
+                        traktWaiting = false;
+                        traktStatus = Ui.trf("Error: {error}.", "error", message == null ? "?" : message);
+                    } else {
+                        traktDevice = device;
+                        traktStatus = Ui.tr("Waiting for the code…");
+                        handler.postDelayed(() -> checkTrakt(run, device.intervalMs), device.intervalMs);
+                    }
+                    invalidate();
+                    spoken.focusMoved();   // TalkBack reads the code
+                });
+            }, "trakt-sign-in").start();
+        }
+
+        private void checkTrakt(int run, long interval) {
+            Trakt.Device d = traktDevice;
+            if (run != traktRun || !running || d == null) return;
+            new Thread(() -> {
+                int result;
+                String error = null;
+                try {
+                    result = Trakt.checkSignIn(d);
+                } catch (Exception e) {
+                    result = -1;
+                    error = e.getMessage();
+                }
+                int r = result;
+                String message = error;
+                handler.post(() -> {
+                    if (run != traktRun) return;
+                    if (r == Trakt.SIGNED_IN) {
+                        traktSignedIn();
+                        return;
+                    }
+                    if (r == Trakt.EXPIRED) {
+                        traktDevice = null;
+                        traktWaiting = false;
+                        traktStatus = Ui.tr("The code expired.");
+                        invalidate();
+                        spoken.focusMoved();
+                        return;
+                    }
+                    // A failed check isn't the end: Trakt is asked again until the code expires.
+                    traktStatus = r < 0 ? Ui.trf("Error: {error}.", "error", message == null ? "?" : message)
+                            : Ui.tr("Waiting for the code…");
+                    long next = r == Trakt.SLOW_DOWN ? interval + 1000 : interval;
+                    handler.postDelayed(() -> checkTrakt(run, next), next);
+                    invalidate();
+                });
+            }, "trakt-sign-in").start();
+        }
+
+        private void traktSignedIn() {
+            traktRun++;
+            traktIn = true;
+            traktUser = Trakt.user();
+            traktDevice = null;
+            traktWaiting = false;
+            Recs.get(getContext()).refreshIfStale();   // the picks come from this account now
+            Toast.makeText(getContext(), traktUser.isEmpty() ? Ui.tr("Signed in")
+                    : Ui.trf("Signed in to Trakt as {name}.", "name", traktUser), Toast.LENGTH_LONG).show();
+            screen = HOME_SETTINGS;
+            pickScroll = 0;
+            focus = TRAKT_ROW;
+            invalidate();
+            spoken.focusMoved();
+        }
+
+        private void askSignOut() {
+            AlertDialog dialog = new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle(Ui.tr("Sign out of Trakt?"))
+                    .setPositiveButton(Ui.tr("Sign out"), (d, which) -> new Thread(() -> {
+                        Trakt.signOut();
+                        handler.post(() -> {
+                            traktIn = false;
+                            traktUser = "";
+                            Recs.get(getContext()).refreshIfStale();   // back to the lists (or TMDB's picks)
+                            invalidate();
+                            spoken.focusMoved();
+                        });
+                    }, "trakt-sign-out").start())
+                    .setNegativeButton(Ui.tr("Cancel"), null)
+                    .show();
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus();   // one stray OK keeps the account
+        }
+
+        private static String shortUrl(String url) {
+            return url.replaceFirst("^https?://", "").replaceFirst("/$", "");
+        }
+
+        /**
+         * Trakt sign-in, as on Apple TV: what it does, then a white card with the address and the code to enter there
+         * (big, from across the room), and how it's going.
+         */
+        private void drawTrakt(Canvas c, float seconds) {
+            float x = LIST_X * k + 30 * k, width = (LIST_R - LIST_X - 60) * k;
+            c.drawText("Trakt", x, (LIST_TOP - 24) * k, traktHeading);
+            if (traktAbout == null || traktAboutGeneration != Ui.generation) {
+                traktAboutGeneration = Ui.generation;
+                String about = Ui.tr("Your Trakt recommendations become the home screen's picks. On your phone or computer, open the address below and enter the code.");
+                traktAbout = StaticLayout.Builder.obtain(about, 0, about.length(), notice, Math.round(width)).build();
+            }
+            float top = (LIST_TOP + 14) * k;
+            c.save();
+            c.translate(x, top);
+            traktAbout.draw(c);
+            c.restore();
+            top += traktAbout.getHeight() + 34 * k;
+            traktCard.set(LIST_X * k, top, LIST_R * k, top + 290 * k);
+            float r = 28 * k;
+            tmp.set(traktCard);
+            tmp.offset(0, 12 * k);
+            shadow.setColor(0x66000000);
+            c.drawRoundRect(tmp, r, r, shadow);
+            white.setAlpha(255);
+            c.drawRoundRect(traktCard, r, r, white);
+            float cx = traktCard.centerX();
+            if (traktDevice != null) {
+                c.drawText(shortUrl(traktDevice.url), cx, traktCard.top + 78 * k, traktUrl);
+                String code = traktDevice.userCode;
+                if (code.length() == 8) code = code.substring(0, 4) + " " + code.substring(4);
+                c.drawText(code, cx, traktCard.top + 214 * k, traktCode);
+            } else {
+                spinner.setColor(traktWaiting ? INK : 0x591C1C1E);
+                if (traktWaiting) Ui.spinner(c, cx, traktCard.centerY(), 22 * k, seconds * 1.3f, spinner);
+            }
+            float y = traktCard.bottom + 62 * k;
+            float sx = x;
+            if (traktWaiting) {
+                spinner.setColor(0xFFFFFFFF);
+                Ui.spinner(c, x + 12 * k, y - Ui.halfCap(traktState), 12 * k, seconds * 1.3f, spinner);
+                sx += 40 * k;
+            }
+            c.drawText(traktStatus, sx, y, traktState);
+            c.drawText(traktDevice == null && !traktWaiting ? Ui.tr("OK gets a new code. Back cancels.") : Ui.tr("Back cancels."),
+                    x, y + 48 * k, rowSub);
         }
 
         private void activate() {
@@ -1371,6 +1573,17 @@ public class SettingsActivity extends Activity {
             } else if (screen == HOME_SETTINGS && pickScroll + focus == PHOTOS_ROW) {
                 askRemovePhotos();
                 return;
+            } else if (screen == HOME_SETTINGS && pickScroll + focus == TRAKT_ROW) {
+                if (traktIn) {
+                    askSignOut();
+                    return;
+                }
+                screen = TRAKT;
+                focus = 0;
+                startTrakt();
+            } else if (screen == TRAKT) {
+                if (traktDevice == null && !traktWaiting) startTrakt();   // expired or failed: a new code
+                return;
             } else if (screen == POWER) {
                 activatePower();
             } else if (screen == HOME_SETTINGS) {
@@ -1388,6 +1601,15 @@ public class SettingsActivity extends Activity {
                 screen = HOME_SETTINGS;
                 focus = 0;
                 pickScroll = 0;
+                if (traktIn && traktUser.isEmpty()) {   // signed in with the tokens built in: ask Trakt for the name
+                    new Thread(() -> {
+                        Trakt.refreshUser();
+                        handler.post(() -> {
+                            traktUser = Trakt.user();
+                            invalidate();
+                        });
+                    }, "trakt-user").start();
+                }
             } else if (focus == 3) {
                 openShelfEditor(false);
             } else if (focus == 4) {

@@ -34,10 +34,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Home screen picks ("This morning / afternoon / tonight"): what's trending this week plus recent releases, only from
- * the streaming apps installed on the TV (Netflix, Prime Video, Disney+, Max, Apple TV, Okko, Hulu, Paramount+, Peacock,
- * Globoplay...), via TMDB (an open movie database that knows what streams where in each country). Three per hour.
- * "Watch" opens the service's app.
+ * Home screen picks: what's trending this week plus recent releases (or your Trakt recommendations), only from the
+ * streaming apps installed on the TV (Netflix, Prime Video, Disney+, Max, Apple TV, Okko, Hulu, Paramount+, Peacock,
+ * Globoplay...), via TMDB (an open movie database that knows what streams where in each country). Each row (Explore,
+ * Movies, Shows) shows three; → past the last card asks for three more ({@link #more}). With Filmix, a title is looked
+ * up in Filmix only when its row gets to it: the rest wait in a queue. "Watch" opens the service's app.
  *
  * Each person uses their own free TMDB key (config.properties "tmdb_key", built into the app). It never goes to the log.
  */
@@ -49,9 +50,13 @@ final class Recs {
         String link;            // Watchmode URL or Filmix search-suggestion payload; null opens the app's home
         String originalTitle;
         int year;
+        float rating;           // TMDB's average (0 to 10); 0 = too few votes to say
         boolean detailed;
         java.io.File photo;     // one of your own photos (Photos): no title, no caption
     }
+
+    /** Cards a row shows at first, and how many more each → past its last card asks for. */
+    static final int PAGE = 3;
 
     interface Listener { void onRecs(); }
 
@@ -62,7 +67,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 9;
+    private static final int CACHE_VERSION = 10;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
@@ -135,9 +140,15 @@ final class Recs {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
-    private final Map<String, Backdrop> images = new LinkedHashMap<>();   // this hour's, built and ready to draw
+    // Built and ready to draw, least recently drawn first: a card on screen never loses its photo.
+    private final Map<String, Backdrop> images = new LinkedHashMap<>(16, 0.75f, true);
     private final java.util.Set<String> pending = new java.util.HashSet<>();
     private volatile List<Pick> picks = new ArrayList<>();
+    /** Filmix: the titles not looked up yet, in Trakt's (or TMDB's) order; picks takes them as the rows need them. */
+    private final List<Pick> queue = new ArrayList<>();
+    /** How many cards each row (Explore, Movies, Shows) shows; → past the last one adds PAGE. Main thread. */
+    private final int[] shown = {PAGE, PAGE, PAGE};
+    private final boolean[] loadingMore = new boolean[3];
     private volatile int period = -1;
     private volatile long listAt;
     private volatile boolean fetching;
@@ -157,6 +168,8 @@ final class Recs {
         try {
             String saved = cache.getString("picks", null);
             if (saved != null) picks = parse(new JSONArray(saved));
+            String waiting = cache.getString("queue", null);
+            if (waiting != null) queue.addAll(parse(new JSONArray(waiting)));
             period = cache.getInt("period", -1);
             listAt = cache.getLong("listAt", 0);
             listLanguage = cache.getString("language", cache.getBoolean("english", false) ? "en" : "pt");
@@ -205,31 +218,128 @@ final class Recs {
         return hour >= 5 && hour < 12 ? MANHA : hour >= 12 && hour < 18 ? TARDE : NOITE;
     }
 
-    /** This hour's picks (the first is the featured one; the arrows switch to the others). */
+    /** The Explore row's cards. */
     List<Pick> now() {
         return now(null);
     }
 
-    /** This hour's 3, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
+    /** A row's cards in order, as many as it shows now: movies only ("movie"), shows only ("tv") or both (null). */
     List<Pick> now(String kind) {
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
         if (FILMIX_ONLY && !filmixCurrent()) return list;
+        int max = shown[row(kind)];
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
         for (Pick p : picks) {
-            if ((!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(p.kind))
-                    && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)))) list.add(p);   // app missing: skip
+            if (list.size() >= max) break;
+            if (visible(p, kind, have)) list.add(p);
         }
-        if (list.isEmpty()) return list;
-        long hour = System.currentTimeMillis() / 3600_000L;
-        // Three per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
-        List<Pick> out = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < list.size() && out.size() < 3; i++) {
-            Pick p = list.get((int) ((hour * 3 + i) % list.size()));
-            if (seen.add(franchise(p.title))) out.add(p);
+        return list;
+    }
+
+    private boolean visible(Pick p, String kind, Map<String, Boolean> have) {
+        return (!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(p.kind))
+                && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)));   // app missing: skip
+    }
+
+    private static int row(String kind) {
+        return kind == null ? 0 : kind.equals("movie") ? 1 : 2;
+    }
+
+    /**
+     * → past a row's last card (main thread): PAGE more. With Filmix, the queue's next titles are looked up now, one at
+     * a time, and each card shows as soon as its title is confirmed. False when the row has nothing more.
+     */
+    boolean more(String kind) {
+        if (!hasMore(kind)) return false;
+        int r = row(kind);
+        shown[r] += PAGE;
+        if (count(kind) < shown[r]) lookUp(kind);
+        notifyListeners();
+        return true;
+    }
+
+    /** The row has more to show: cards already confirmed, or titles still waiting in the queue. */
+    boolean hasMore(String kind) {
+        if (!hasKey(context) || (FILMIX_ONLY && !filmixCurrent())) return false;
+        return count(kind) > shown[row(kind)] || queued(kind);
+    }
+
+    /** The row's next titles are being looked up (its last cards are still empty). */
+    boolean loading(String kind) {
+        return loadingMore[row(kind)];
+    }
+
+    private int count(String kind) {
+        int n = 0;
+        Map<String, Boolean> have = new HashMap<>();
+        for (Pick p : picks) if (visible(p, kind, have)) n++;
+        return n;
+    }
+
+    private boolean queued(String kind) {
+        synchronized (queue) {
+            for (Pick p : queue) if (kind == null || kind.equals(p.kind)) return true;
         }
-        return out;
+        return false;
+    }
+
+    /** Main thread: looks up the row's next titles in the background until it has as many cards as it shows. */
+    private void lookUp(String kind) {
+        int r = row(kind);
+        if (loadingMore[r]) return;
+        loadingMore[r] = true;
+        io.execute(() -> lookUpNext(kind));
+    }
+
+    /** One title from the queue (io thread), then the next one as a new task, so the cards' images load in between. */
+    private void lookUpNext(String kind) {
+        boolean failed = false;
+        Pick next;
+        synchronized (queue) {
+            next = take(queue, kind);
+        }
+        if (next != null) {
+            try {
+                if (confirm(next)) {
+                    List<Pick> list = new ArrayList<>(picks);
+                    list.add(next);
+                    picks = list;
+                    notifyListeners();
+                }
+            } catch (IOException e) {   // Filmix can't be asked now: the title goes back for the next try
+                synchronized (queue) {
+                    queue.add(0, next);
+                }
+                failed = true;
+                AppLog.w("Filmix: " + e.getMessage());
+            }
+            save();
+        }
+        boolean stop = failed || next == null;
+        main.post(() -> {
+            int r = row(kind);
+            if (!stop && count(kind) < shown[r] && queued(kind)) {
+                io.execute(() -> lookUpNext(kind));
+                return;
+            }
+            loadingMore[r] = false;
+            shown[r] = Math.min(shown[r], Math.max(count(kind), PAGE));   // what didn't come isn't waited for
+            notifyListeners();
+        });
+    }
+
+    private static Pick take(List<Pick> list, String kind) {
+        for (int i = 0; i < list.size(); i++) {
+            if (kind == null || kind.equals(list.get(i).kind)) return list.remove(i);
+        }
+        return null;
+    }
+
+    private static int count(List<Pick> list, String kind) {
+        int n = 0;
+        for (Pick p : list) if (kind == null || kind.equals(p.kind)) n++;
+        return n;
     }
 
     /** "Law & Order: Special Victims Unit" → "law & order" (what comes before ":" or " - "). */
@@ -262,6 +372,19 @@ final class Recs {
             }
         });
         return null;
+    }
+
+    /** The pick's backdrop if it's already built, else null (and nothing starts loading). */
+    Backdrop ready(Pick p) {
+        if (p == null || p.backdrop == null) return null;
+        synchronized (images) {
+            return images.get(p.backdrop);
+        }
+    }
+
+    /** How many cards the row shows now, counting the ones still being looked up. Main thread. */
+    int shown(String kind) {
+        return shown[row(kind)];
     }
 
     private boolean hasImage(Pick p) {
@@ -392,7 +515,7 @@ final class Recs {
         });
     }
 
-    /** This hour's picks for the three tabs (Explore, Movies, Shows), without repeats. */
+    /** The cards the three rows (Explore, Movies, Shows) show now, without repeats: their images are wanted. */
     List<Pick> wanted() {
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
@@ -492,6 +615,10 @@ final class Recs {
         alternate(list, seen, newMovies, newShows, 24);
         if (list.isEmpty()) throw new IOException("TMDB returned no recommendations");
         picks = list;
+        synchronized (queue) {
+            queue.clear();   // every title here is already checked: → past a row's end only shows more of them
+        }
+        main.post(() -> Arrays.fill(shown, PAGE));
         period = p;
         listAt = System.currentTimeMillis();
         listLanguage = Ui.language;
@@ -556,42 +683,57 @@ final class Recs {
             alternate(candidates, seen, discMovies, discShows, 60);
         }
 
-        List<Pick> confirmed = new ArrayList<>();
-        for (Pick pick : candidates) {
-            if (pick.year < 1888) continue;
-            // Pre-fetch TMDB details if backdrop is missing (e.g. from Trakt) so localized title and originalTitle are set
-            if (pick.backdrop == null) {
-                try {
-                    fetchDetails(pick);
-                } catch (Exception e) {
-                    AppLog.w("Filmix: no TMDB details for " + key(pick) + " “" + pick.title + "”");
-                    continue;
-                }
+        // Only what the rows show at first is looked up now (Explore's three, then Movies' and Shows'); the rest waits in
+        // the queue until → past a row's last card asks for it.
+        List<Pick> rest = new ArrayList<>(candidates), confirmed = new ArrayList<>();
+        int checked = 0;
+        for (String kind : new String[] {null, "movie", "tv"}) {
+            while (count(confirmed, kind) < PAGE) {
+                Pick next = take(rest, kind);
+                if (next == null) break;
+                checked++;
+                if (confirm(next)) confirmed.add(next);
             }
-            String link = Filmix.find(context, pick.title, pick.originalTitle, pick.year, pick.kind.equals("tv"));
-            if (link == null) {
-                AppLog.w("Filmix: not found “" + pick.title + "” / “" + pick.originalTitle + "” (" + pick.year + ")");
-                continue;
-            }
-            pick.app = "filmix";
-            pick.pkg = Filmix.PKG;
-            pick.link = link;
-            if (!pick.detailed) {
-                try {
-                    fetchDetails(pick);
-                } catch (Exception e) {
-                    AppLog.w("Filmix: no TMDB details for " + key(pick) + " “" + pick.title + "”");
-                    continue;   // a missing TMDB detail must not make an unverified or incomplete card visible
-                }
-            }
-            confirmed.add(pick);
         }
-        AppLog.w("Filmix: " + confirmed.size() + " of " + candidates.size() + " titles found");
+        AppLog.w("Filmix: " + confirmed.size() + " of " + checked + " titles found, " + rest.size() + " waiting");
         if (confirmed.isEmpty()) throw new IOException("No matching TMDB titles were found in Filmix");
         picks = confirmed;
+        synchronized (queue) {
+            queue.clear();
+            queue.addAll(rest);
+        }
+        main.post(() -> Arrays.fill(shown, PAGE));   // a new list: each row starts again with three
         this.period = period;
         listAt = System.currentTimeMillis();
         listLanguage = Ui.language;
+    }
+
+    /**
+     * Looks the title up in Filmix, with its TMDB details first (the Russian and original titles, the year). False when
+     * Filmix doesn't have it; IOException when Filmix can't be asked.
+     */
+    private boolean confirm(Pick pick) throws IOException {
+        if (pick.year < 1888) return false;
+        if (pick.backdrop == null && !details(pick)) return false;
+        String link = Filmix.find(context, pick.title, pick.originalTitle, pick.year, pick.kind.equals("tv"));
+        if (link == null) {
+            AppLog.w("Filmix: not found “" + pick.title + "” / “" + pick.originalTitle + "” (" + pick.year + ")");
+            return false;
+        }
+        pick.app = "filmix";
+        pick.pkg = Filmix.PKG;
+        pick.link = link;
+        return pick.detailed || details(pick);   // a missing TMDB detail must not make an incomplete card visible
+    }
+
+    private boolean details(Pick pick) {
+        try {
+            fetchDetails(pick);
+            return true;
+        } catch (Exception e) {
+            AppLog.w("Filmix: no TMDB details for " + key(pick) + " “" + pick.title + "”");
+            return false;
+        }
     }
 
     /**
@@ -682,6 +824,8 @@ final class Recs {
         if (!orig.isEmpty()) p.originalTitle = orig;
         String date = o.optString(p.kind.equals("movie") ? "release_date" : "first_air_date");
         if (date.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) p.year = Integer.parseInt(date.substring(0, 4));
+        // A handful of votes says little: no rating then, rather than a misleading 10.
+        p.rating = o.optInt("vote_count") >= 20 ? (float) o.optDouble("vote_average", 0) : 0;
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
         List<String> parts = new ArrayList<>();
@@ -708,7 +852,7 @@ final class Recs {
                 p.pkg = s[2];
             }
         }
-        if (p.app != null) parts.add(SERVICE_NAME.get(p.app));
+        if (p.app != null && !FILMIX_ONLY) parts.add(SERVICE_NAME.get(p.app));   // with Filmix, every card is Filmix's
         p.meta = String.join(" · ", parts);
         p.detailed = true;
     }
@@ -804,7 +948,7 @@ final class Recs {
         stamp = stamp * 31L + Config.RECOMMENDATIONS_APP.hashCode();
         stamp = stamp * 31L + Config.TRAKT_CLIENT_ID.hashCode();
         stamp = stamp * 31L + Config.TRAKT_USER.hashCode();
-        stamp = stamp * 31L + Config.TRAKT_ACCESS_TOKEN.hashCode();
+        stamp = stamp * 31L + Trakt.account().hashCode();   // signing in or out of Trakt fetches the list again
         if (FILMIX_ONLY) return stamp * 31L + (installed(Filmix.PKG) ? Filmix.PKG.hashCode() : 0);
         for (String[] service : SERVICES) stamp = stamp * 31L + (installed(service[2]) ? service[2].hashCode() : 0);
         return stamp;
@@ -908,6 +1052,7 @@ final class Recs {
     // MARK: - Images (TMDB originals on disk, up to 24 so the whole list fits; this hour's kept ready in memory)
 
     private void download(Pick p) throws IOException {
+        if (p.backdrop == null) return;   // TMDB has no image for it: the card shows without one
         File f = imageFile(p);
         if (f.exists()) return;
         //noinspection ResultOfMethodCallIgnored
@@ -953,7 +1098,8 @@ final class Recs {
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                while (images.size() > (forLight ? 10 : 4)) images.remove(images.keySet().iterator().next());
+                // The row's cards around the focus and the other tabs' first ones; the least recently drawn goes.
+                while (images.size() > (forLight ? 12 : 4)) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
         } catch (IOException | RuntimeException | OutOfMemoryError e) {
@@ -993,13 +1139,13 @@ final class Recs {
 
     private void save() {
         try {
-            JSONArray a = new JSONArray();
-            for (Pick p : picks) {
-                a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop).put("link", p.link == null ? "" : p.link)
-                        .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
-                        .put("detailed", p.detailed));
+            JSONArray a = new JSONArray(), q = new JSONArray();
+            for (Pick p : picks) a.put(json(p));
+            synchronized (queue) {
+                for (Pick p : queue) q.put(json(p));
             }
-            SharedPreferences.Editor e = cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
+            SharedPreferences.Editor e = cache.edit().putString("picks", a.toString()).putString("queue", q.toString())
+                    .putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
                     .putString("recommendationsApp", Config.RECOMMENDATIONS_APP)
                     .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION);
@@ -1012,6 +1158,14 @@ final class Recs {
         }
     }
 
+    private static JSONObject json(Pick p) throws org.json.JSONException {
+        return new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title)
+                .put("original", p.originalTitle == null ? "" : p.originalTitle).put("year", p.year)
+                .put("rating", (double) p.rating).put("backdrop", p.backdrop == null ? "" : p.backdrop)
+                .put("link", p.link == null ? "" : p.link).put("meta", p.meta)
+                .put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg).put("detailed", p.detailed);
+    }
+
     private static List<Pick> parse(JSONArray a) {
         List<Pick> out = new ArrayList<>();
         for (int i = 0; i < a.length(); i++) {
@@ -1021,7 +1175,10 @@ final class Recs {
             p.id = o.optInt("id");
             p.kind = o.optString("kind");
             p.title = o.optString("title");
-            p.backdrop = o.optString("backdrop");
+            p.originalTitle = o.optString("original").isEmpty() ? null : o.optString("original");
+            p.year = o.optInt("year");
+            p.rating = (float) o.optDouble("rating", 0);
+            p.backdrop = o.optString("backdrop").isEmpty() ? null : o.optString("backdrop");
             p.link = o.optString("link").isEmpty() ? null : o.optString("link");
             p.meta = o.optString("meta");
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
