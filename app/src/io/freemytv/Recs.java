@@ -196,10 +196,15 @@ final class Recs {
         }
     }
 
+    /** For the settings: the titles ready to show and, with Filmix, how many still wait to be looked up. */
     private void writeStatus() {
+        int waiting;
+        synchronized (queue) {
+            waiting = queue.size();
+        }
         try (FileOutputStream out = new FileOutputStream(new File(context.getFilesDir(), "recs-status.json"))) {
-            out.write(new JSONObject().put("count", picks.size()).put("error", error).put("at", System.currentTimeMillis())
-                    .toString().getBytes(StandardCharsets.UTF_8));
+            out.write(new JSONObject().put("count", picks.size()).put("waiting", waiting).put("error", error)
+                    .put("at", System.currentTimeMillis()).toString().getBytes(StandardCharsets.UTF_8));
         } catch (Exception ignored) {
         }
     }
@@ -315,6 +320,7 @@ final class Recs {
                 AppLog.w("Filmix: " + e.getMessage());
             }
             save();
+            writeStatus();   // the settings count what is ready and what still waits
         }
         boolean stop = failed || next == null;
         main.post(() -> {
