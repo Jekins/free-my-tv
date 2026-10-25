@@ -87,9 +87,8 @@ final class Trakt {
             AppLog.w("Trakt fetchRecommendations failed for " + kind + ": " + e.getMessage());
             return items;
         }
-        String expected = type;
         for (int i = 0; i < array.length(); i++) {
-            Item item = parseItem(array.optJSONObject(i), expected);
+            Item item = parseItem(array.optJSONObject(i), type);   // bare movie/show objects, no wrapper
             if (item != null) items.add(item);
         }
         return items;

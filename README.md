@@ -168,6 +168,15 @@ device restart if search is unavailable). The launcher matches titles conservati
 movie/series type, and opens Filmix's own search-result card. Ambiguous or missing matches are omitted. Confirmed
 matches are cached for up to six hours; if Filmix cannot be queried, it never falls back to Netflix or another app.
 
+### Your Trakt recommendations (Android, optional)
+
+The picks can come from [Trakt](https://trakt.tv)'s recommendations for your account (movies and shows from what you
+rated and watched) instead of what's trending. Make an app at [Trakt → Settings → Apps](https://app.trakt.tv/settings/apps)
+with the redirect URI `urn:ietf:wg:oauth:2.0:oob`, paste its Client ID after `trakt_client_id=`, then run
+`python3 tools/trakt_login.py`: it shows a code to enter on Trakt's site and saves the tokens in `config.properties`.
+Build and install again. The TV refreshes the token by itself each week; the TMDB key is still needed for the
+pictures. If Trakt can't be reached, the picks come from `trakt_user`'s public lists (Couchmoney's), then from TMDB.
+
 ### Opening a title, not just its app (optional)
 
 With a free [Watchmode](https://api.watchmode.com/) key (`watchmode_key=` in `config.properties`), a pick opens its own page in the streaming app instead of the app's home. The free plan (2,500 credits a month) is enough: each title costs two requests the first time and is remembered after that. It works where the app takes the title's web address (tested: Prime Video and JioHotstar); where it doesn't, the pick just opens the app, as without a key.
