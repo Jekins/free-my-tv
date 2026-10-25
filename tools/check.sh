@@ -17,6 +17,7 @@ esac
 
 if [ "$what" = all ] || [ "$what" = android ]; then
   ./build.sh
+  bash tools/test-filmix.sh
 fi
 
 if [ "$what" = all ] || [ "$what" = web ]; then
