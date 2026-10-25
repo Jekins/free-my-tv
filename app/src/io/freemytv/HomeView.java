@@ -153,9 +153,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // The row of picks, as on Apple TV: the focused card is wide and the others tall, each width a spring, and the row
     // scrolls only when the wide card wouldn't fit. → past the last card asks Recs for more; empty cards (slots) hold
     // their places, softly pulsing, until their titles are confirmed. The focused card stretches past its size once and
-    // comes back softly (a spring with its own `back`), a little thinner meanwhile, squeezing the gaps after it.
-    private final List<Spring> cardFocus = new ArrayList<>(), cardWide = new ArrayList<>();
+    // comes back softly (a spring with its own `back`), a little thinner meanwhile. As it grows, the next card gives way
+    // at once, squeezing the gap after it, and comes back: pushed by most of the stretch and by the focus growth ahead
+    // of cardLag, a slower copy of cardFocus, so the two never touch.
+    private final List<Spring> cardFocus = new ArrayList<>(), cardWide = new ArrayList<>(), cardLag = new ArrayList<>();
     private static final float CARD_SQUASH = 0.25f;   // height lost per width stretched past its size: ~1% at a move
+    private static final float PUSH_STRETCH = 0.75f, PUSH_GROW = 1.1f;   // the next card gives way up to ~30 px
     private final Spring rowScroll = new Spring(0.42f, 0.92f, 0), rowNudge = new Spring(0.24f, 0.42f, 0);
     private RectF[] cardRects = new RectF[0];   // each slot at rest (the focused one wide): moving up and down, TalkBack
     private CardText[] cardWords = new CardText[0];
@@ -772,7 +775,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean heroMoving = heroFocus.step(dt);
         boolean topMoving = step(topFocus, dt);
         // The row: lift, widths, scroll and the bump at its end; empty cards pulse while their titles load.
-        boolean cardsMoving = step(cardFocus, dt) | step(cardWide, dt) | rowScroll.step(dt) | rowNudge.step(dt)
+        boolean cardsMoving = step(cardFocus, dt) | step(cardWide, dt) | step(cardLag, dt) | rowScroll.step(dt) | rowNudge.step(dt)
                 | slots > cards.size() | up < fadingUntil;
         if (topMoving) status.invalidate();
         heroMoving |= topMoving | cardsMoving;
@@ -1999,6 +2002,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (slots == 0 || tallW == 0) return false;
         int focus = Math.min(cardIndex, slots - 1);
         boolean changed = aim(cardWide, focus, snap);
+        aim(cardLag, !sheetOpen && zone == Z_CARDS ? cardIndex : -1, snap);
         float margin = MARGIN * k, left = margin + focus * (tallW + cardGap), right = left + wideW;
         float s = rowScroll.target;
         if (left - s < margin) s = left - margin;
@@ -3146,6 +3150,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         while (cardFocus.size() < n) {
             cardFocus.add(new Spring(0.32f, 0.78f, 0));
             cardWide.add(new Spring(0.4f, 0.7f, 0, 0.56f));   // wide in 0.22 s, ~5% over at 0.3 s, then softly back
+            cardLag.add(new Spring(0.6f, 1, 0));
         }
         if (cardRects.length < n) {
             int size = Math.max(n, cardRects.length * 2);
@@ -3162,6 +3167,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             for (int i = 0; i < cardFocus.size(); i++) {
                 cardFocus.get(i).snap(0);
                 cardWide.get(i).snap(0);
+                cardLag.get(i).snap(0);
             }
             rowScroll.snap(0);
         }
@@ -3295,9 +3301,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (i == tab) lTabOn.setColor(blend(tone(L_INK, WHITE), L_INK, focus));   // always dark on the white pill
             c.drawText(tabs()[i], r.centerX() - p.measureText(tabs()[i]) / 2, r.centerY() + Ui.halfCap(p), p);
         }
-        // The row, from each card's width this frame (never under the tall one); what a card stretches past its size
-        // comes out of the two gaps after it, like jelly: the next card moves half as far, the one after it not at all.
-        // What is off screen isn't drawn, and the lifted card goes last.
+        // The row, from each card's width this frame (never under the tall one). The stretch comes out of the gaps,
+        // like jelly: the next card is pushed (`push`) and the one after it stays. What is off screen isn't drawn, and
+        // the lifted card goes last.
         float x = MARGIN * k - rowScroll.value + rowNudge.value, reach = 60 * k, delta = wideW - tallW, before = 0;
         int top = -1;
         for (int i = 0; i < slots; i++) {
@@ -3305,8 +3311,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (v > 0.02f && (top < 0 || v > cardFocus.get(top).value)) top = i;
             cardX[i] = x;
             cardW[i] = tallW + delta * Math.max(0, wide);
-            x += cardW[i] + cardGap - (over + before) / 2;
-            before = over;
+            float push = Math.max(0, PUSH_STRETCH * over + PUSH_GROW * (v - cardLag.get(i).value) * cardW[i] * 0.025f);
+            x += cardW[i] + cardGap - over + push - before;
+            before = push;
         }
         for (int i = 0; i < slots; i++) {
             if (i != top && cardX[i] + cardW[i] > -reach && cardX[i] < w + reach) drawLightCard(c, i);
