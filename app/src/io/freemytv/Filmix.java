@@ -114,8 +114,8 @@ final class Filmix {
     private static String payload(JSONObject source) throws org.json.JSONException {
         long id = source.optLong("id");
         String slug = source.optString("alt_name");
-        if (id <= 0 || id > Integer.MAX_VALUE || slug.isEmpty() || slug.length() > 512
-                || !slug.matches("[A-Za-z0-9_-]+") || !(source.opt("hasSeries") instanceof Boolean)) return null;
+        if (id <= 0 || id > Integer.MAX_VALUE || !FilmixMatch.slug(slug)
+                || !(source.opt("hasSeries") instanceof Boolean)) return null;
         return new JSONObject().put("id", id).put("alt_name", slug).put("hasSeries", source.getBoolean("hasSeries")).toString();
     }
 

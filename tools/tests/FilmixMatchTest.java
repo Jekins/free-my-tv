@@ -49,6 +49,17 @@ public final class FilmixMatchTest {
         // Filmix's search finds nothing for a plain apostrophe; the typographic one is what it stores.
         same("Ocean’s Eleven", FilmixMatch.query("Ocean's Eleven"));
         same("Человек-паук", FilmixMatch.query(" Человек-паук "));
+
+        // The card is opened with Filmix's own slug: some carry a dot ("Black Widow").
+        slug(true, "29.9-chernaya-vdova-2020");
+        slug(true, "legenda-o-volkah_2020");
+        slug(false, "../films");
+        slug(false, "a..b");
+        slug(false, ".hidden");
+        slug(false, "chernaya vdova");
+        slug(false, "чёрная-вдова");
+        slug(false, "");
+        slug(false, null);
         System.out.println("Filmix matching: " + checks + " catalogue identity checks passed.");
     }
 
@@ -58,6 +69,11 @@ public final class FilmixMatchTest {
         if (actual != expected) {
             throw new AssertionError("Match " + actual + " (expected " + expected + ") for " + title + " against " + offered);
         }
+        checks++;
+    }
+
+    private static void slug(boolean expected, String slug) {
+        if (FilmixMatch.slug(slug) != expected) throw new AssertionError("Slug " + slug + " (expected " + expected + ")");
         checks++;
     }
 

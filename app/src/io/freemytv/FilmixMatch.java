@@ -33,6 +33,11 @@ final class FilmixMatch {
         return title.trim().replace('\'', '’');
     }
 
+    /** Filmix's slug for a title (alt_name), as its own suggestions give it: "29.9-chernaya-vdova-2020". */
+    static boolean slug(String slug) {
+        return slug != null && slug.length() <= 512 && slug.matches("[A-Za-z0-9][A-Za-z0-9._-]*") && !slug.contains("..");
+    }
+
     static String normalize(String title) {
         if (title == null) return "";
         return Normalizer.normalize(title, Normalizer.Form.NFKD).toLowerCase(Locale.ROOT)

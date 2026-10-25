@@ -62,7 +62,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 8;
+    private static final int CACHE_VERSION = 9;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
@@ -564,11 +564,15 @@ final class Recs {
                 try {
                     fetchDetails(pick);
                 } catch (Exception e) {
+                    AppLog.w("Filmix: no TMDB details for " + key(pick) + " “" + pick.title + "”");
                     continue;
                 }
             }
             String link = Filmix.find(context, pick.title, pick.originalTitle, pick.year, pick.kind.equals("tv"));
-            if (link == null) continue;
+            if (link == null) {
+                AppLog.w("Filmix: not found “" + pick.title + "” / “" + pick.originalTitle + "” (" + pick.year + ")");
+                continue;
+            }
             pick.app = "filmix";
             pick.pkg = Filmix.PKG;
             pick.link = link;
@@ -576,11 +580,13 @@ final class Recs {
                 try {
                     fetchDetails(pick);
                 } catch (Exception e) {
+                    AppLog.w("Filmix: no TMDB details for " + key(pick) + " “" + pick.title + "”");
                     continue;   // a missing TMDB detail must not make an unverified or incomplete card visible
                 }
             }
             confirmed.add(pick);
         }
+        AppLog.w("Filmix: " + confirmed.size() + " of " + candidates.size() + " titles found");
         if (confirmed.isEmpty()) throw new IOException("No matching TMDB titles were found in Filmix");
         picks = confirmed;
         this.period = period;
