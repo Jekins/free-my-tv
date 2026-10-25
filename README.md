@@ -150,6 +150,7 @@ The first values come from `config.properties`, created by the first build (Goog
 | `disable_assistant` | Also turn off Google Assistant | `false` |
 | `screensaver` | `false` keeps the TV's own screensaver: Free My TV then changes only the home screen and the promo apps (Google TV) | `true` |
 | `hide_services` | Streaming services to leave out of the picks even when their app is on the TV (`netflix`, `prime`, `disney`…), comma separated; for apps the TV ships that you don't subscribe to. Google TV only | empty |
+| `recommendations_app` | Android only: `filmix` keeps TMDB discovery and artwork, but shows only exact title/year/movie-or-series matches found in the installed Filmix app, and opens those cards in Filmix. Empty keeps the normal service selection. | empty |
 | `hide_apps` | Apps to leave out of the shelf, All Apps and the picks, by id or name (part of it), comma separated; for apps the TV ships that can't be uninstalled, like Samsung's built-in Netflix. LG and Samsung only | empty |
 | `shelf_apps` | The shelf's apps in this order, by id or name (part of it), comma separated; changing it wins once over the shelf picked on the TV. On Samsung, a whole app id also brings an app the TV leaves out of its list, like one installed in Developer Mode. LG and Samsung only | empty |
 
@@ -158,6 +159,14 @@ Changed something? Run `./build.sh` and install again. Keep `freemytv.keystore`:
 ### The TMDB key
 
 Free, and it takes two minutes: create an account at [themoviedb.org](https://www.themoviedb.org/signup), then open [Settings → API](https://www.themoviedb.org/settings/api) and request a developer key. Paste the *API Read Access Token* (or the *API Key*) after `tmdb_key=`. It's your key: `config.properties` stays out of git.
+
+### Filmix-only recommendations (Android)
+
+On Android, `recommendations_app=filmix` uses Filmix's exported Android TV search provider; it does not need a
+Watchmode key or access to Filmix's account credentials. Open Filmix once before the first refresh (and after a
+device restart if search is unavailable). The launcher matches titles conservatively by name, release year and
+movie/series type, and opens Filmix's own search-result card. Ambiguous or missing matches are omitted. Confirmed
+matches are cached for up to six hours; if Filmix cannot be queried, it never falls back to Netflix or another app.
 
 ### Opening a title, not just its app (optional)
 

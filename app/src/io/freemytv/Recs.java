@@ -46,7 +46,9 @@ final class Recs {
         int id;
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
-        String link;            // opens the title in its app (looked up with Watchmode), or null: the app's home
+        String link;            // Watchmode URL or Filmix search-suggestion payload; null opens the app's home
+        String originalTitle;
+        int year;
         boolean detailed;
         java.io.File photo;     // one of your own photos (Photos): no title, no caption
     }
@@ -60,7 +62,8 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 4;
+    private static final int CACHE_VERSION = 5;
+    private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
     private static final String[][] SERVICES = {
@@ -94,6 +97,7 @@ final class Recs {
     };
     private static final Map<String, String> SERVICE_NAME = new HashMap<>();
     static {
+        SERVICE_NAME.put("filmix", "Filmix");
         SERVICE_NAME.put("netflix", "Netflix");
         SERVICE_NAME.put("prime", "Prime Video");
         SERVICE_NAME.put("disney", "Disney+");
@@ -145,7 +149,11 @@ final class Recs {
     private Recs(Context c) {
         context = c;
         cache = c.getSharedPreferences("recs", Context.MODE_PRIVATE);
-        if (cache.getInt("version", 0) != CACHE_VERSION) cache.edit().clear().putInt("version", CACHE_VERSION).apply();
+        if (cache.getInt("version", 0) != CACHE_VERSION
+                || !Config.RECOMMENDATIONS_APP.equals(cache.getString("recommendationsApp", ""))) {
+            cache.edit().clear().putInt("version", CACHE_VERSION)
+                    .putString("recommendationsApp", Config.RECOMMENDATIONS_APP).apply();
+        }
         try {
             String saved = cache.getString("picks", null);
             if (saved != null) picks = parse(new JSONArray(saved));
@@ -206,9 +214,10 @@ final class Recs {
     List<Pick> now(String kind) {
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
+        if (FILMIX_ONLY && !filmixCurrent()) return list;
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
         for (Pick p : picks) {
-            if ((kind == null || kind.equals(p.kind))
+            if ((!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(p.kind))
                     && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)))) list.add(p);   // app missing: skip
         }
         if (list.isEmpty()) return list;
@@ -270,7 +279,7 @@ final class Recs {
         long stamp = sourceStamp();   // a new key, country, animation choice or installed streaming-app set refetches
         boolean newKey = stamp != keyStamp;
         long sinceFail = now - failedAt;    // negative = the clock went back: don't wait
-        if (!newKey && failedAt != 0 && sinceFail >= 0 && sinceFail < 10 * 60_000L) return;
+        if (!newKey && failedAt != 0 && sinceFail >= 0 && sinceFail < (FILMIX_ONLY ? 60_000L : 10 * 60_000L)) return;
         int p = period(now);
         boolean stale = newKey || p != period || now - listAt > LIST_EVERY || now < listAt || picks.isEmpty()
                 || !listLanguage.equals(Ui.language);
@@ -328,11 +337,12 @@ final class Recs {
     List<Pick> showcase() {
         List<Pick> out = new ArrayList<>();
         if (!hasKey(context)) return out;
+        if (FILMIX_ONLY && !filmixCurrent()) return out;
         java.util.Set<String> seen = new java.util.HashSet<>();
         for (Pick p : wanted()) if (hasImage(p) && seen.add(franchise(p.title))) out.add(p);
         Map<String, Boolean> have = new HashMap<>();
         for (Pick p : picks) {
-            if (p.detailed && p.pkg != null && have.computeIfAbsent(p.pkg, this::installed) && hasImage(p)
+            if ((!FILMIX_ONLY || filmixPick(p)) && p.detailed && p.pkg != null && have.computeIfAbsent(p.pkg, this::installed) && hasImage(p)
                     && seen.add(franchise(p.title))) out.add(p);
         }
         return out;
@@ -404,6 +414,10 @@ final class Recs {
     // MARK: - TMDB
 
     private void fetchList(int p) throws Exception {
+        if (FILMIX_ONLY) {
+            fetchFilmixList(p);
+            return;
+        }
         // None of the services we know is on the TV (or hide_services hides them all): no region would change that.
         boolean any = false;
         for (String[] s : SERVICES) any |= installed(s[2]);
@@ -459,6 +473,61 @@ final class Recs {
         listLanguage = Ui.language;
     }
 
+    private static boolean filmixPick(Pick p) {
+        return p.detailed && "filmix".equals(p.app) && Filmix.PKG.equals(p.pkg) && p.link != null;
+    }
+
+    private boolean filmixCurrent() {
+        long age = System.currentTimeMillis() - listAt;
+        return listAt > 0 && age >= 0 && age <= LIST_EVERY;
+    }
+
+    /** TMDB supplies discovery and artwork; only exact matches confirmed by Filmix reach the screen. */
+    private void fetchFilmixList(int period) throws Exception {
+        if (!installed(Filmix.PKG)) throw new IOException(Filmix.UNAVAILABLE);
+        List<Pick> movies = new ArrayList<>(), shows = new ArrayList<>();
+        for (String kind : new String[] {"movie", "tv"}) {
+            JSONArray hot = get("/trending/" + kind + "/week?language=" + lang()).getJSONArray("results");
+            List<Pick> target = kind.equals("movie") ? movies : shows;
+            for (int i = 0; i < hot.length() && i < 20; i++) add(target, hot.getJSONObject(i), kind);
+        }
+        List<Pick> candidates = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        alternate(candidates, seen, movies, shows, 40);
+        movies.clear();
+        shows.clear();
+        String common = "&language=" + lang() + "&include_adult=false&sort_by=popularity.desc"
+                + (Config.HIDE_ANIMATION ? "&without_genres=" + ANIMATION : "");
+        JSONArray recentMovies = get("/discover/movie?vote_count.gte=30&primary_release_date.gte=" + day(-365)
+                + "&primary_release_date.lte=" + day(0) + common).getJSONArray("results");
+        JSONArray recentShows = get("/discover/tv?vote_count.gte=20&air_date.gte=" + day(-90)
+                + "&air_date.lte=" + day(0) + common).getJSONArray("results");
+        for (int i = 0; i < recentMovies.length(); i++) add(movies, recentMovies.getJSONObject(i), "movie");
+        for (int i = 0; i < recentShows.length(); i++) add(shows, recentShows.getJSONObject(i), "tv");
+        alternate(candidates, seen, movies, shows, 60);
+        List<Pick> confirmed = new ArrayList<>();
+        for (Pick pick : candidates) {
+            if (pick.year < 1888) continue;
+            String link = Filmix.find(context, pick.title, pick.originalTitle, pick.year, pick.kind.equals("tv"));
+            if (link == null) continue;
+            pick.app = "filmix";
+            pick.pkg = Filmix.PKG;
+            pick.link = link;
+            try {
+                fetchDetails(pick);
+            } catch (Exception e) {
+                continue;   // a missing TMDB detail must not make an unverified or incomplete card visible
+            }
+            confirmed.add(pick);
+            if (confirmed.size() >= 24) break;
+        }
+        if (confirmed.isEmpty()) throw new IOException("No matching TMDB titles were found in Filmix");
+        picks = confirmed;
+        this.period = period;
+        listAt = System.currentTimeMillis();
+        listLanguage = Ui.language;
+    }
+
     /** Language of titles and genres (TMDB's "fr-FR", "zh-CN"…); the services come from the region. */
     private static String lang() {
         String lang = Ui.language;
@@ -492,6 +561,9 @@ final class Recs {
         p.id = o.optInt("id");
         p.kind = kind;
         p.title = o.optString(kind.equals("movie") ? "title" : "name");
+        p.originalTitle = o.optString(kind.equals("movie") ? "original_title" : "original_name");
+        String date = o.optString(kind.equals("movie") ? "release_date" : "first_air_date");
+        if (date.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) p.year = Integer.parseInt(date.substring(0, 4));
         p.backdrop = backdrop;
         list.add(p);
     }
@@ -505,7 +577,8 @@ final class Recs {
     /** Genre, runtime (or seasons) and the service it's on, among the ones the TV has. */
     private void fetchDetails(Pick p) throws Exception {
         JSONObject o = get("/" + p.kind + "/" + p.id
-                + "?language=" + lang() + "&append_to_response=watch/providers,images&include_image_language=null," + Ui.language.replaceAll("-.*", "") + ",en");
+                + "?language=" + lang() + "&append_to_response=" + (FILMIX_ONLY ? "images" : "watch/providers,images")
+                + "&include_image_language=null," + Ui.language.replaceAll("-.*", "") + ",en");
         p.title = title(p, o);
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
@@ -526,7 +599,7 @@ final class Recs {
         JSONObject wp = o.optJSONObject("watch/providers");
         JSONObject br = wp == null ? null : wp.optJSONObject("results") == null ? null : wp.optJSONObject("results").optJSONObject(REGION);
         JSONArray flat = br == null ? null : br.optJSONArray("flatrate");
-        for (int i = 0; flat != null && i < flat.length() && p.app == null; i++) {
+        for (int i = 0; !FILMIX_ONLY && flat != null && i < flat.length() && p.app == null; i++) {
             String[] s = service(flat.getJSONObject(i).optString("provider_name"), flat.getJSONObject(i).optInt("provider_id"));
             if (s != null && installed(s[2])) {
                 p.app = s[1];
@@ -626,6 +699,8 @@ final class Recs {
 
     private long sourceStamp() {
         long stamp = (Config.TMDB_KEY.hashCode() * 31L + REGION.hashCode()) * 31L + (Config.HIDE_ANIMATION ? 1 : 0);
+        stamp = stamp * 31L + Config.RECOMMENDATIONS_APP.hashCode();
+        if (FILMIX_ONLY) return stamp * 31L + (installed(Filmix.PKG) ? Filmix.PKG.hashCode() : 0);
         for (String[] service : SERVICES) stamp = stamp * 31L + (installed(service[2]) ? service[2].hashCode() : 0);
         return stamp;
     }
@@ -637,7 +712,7 @@ final class Recs {
     }
 
     private boolean needsLink(Pick p) {
-        return linksOn() && p.pkg != null && p.link == null
+        return !FILMIX_ONLY && linksOn() && p.pkg != null && p.link == null
                 && cache.getString(linkKey(p), null) == null && System.currentTimeMillis() >= linkRetryAt;
     }
 
@@ -821,6 +896,7 @@ final class Recs {
             }
             SharedPreferences.Editor e = cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
+                    .putString("recommendationsApp", Config.RECOMMENDATIONS_APP)
                     .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION);
             // Watchmode links of titles no longer in the list go (the refused-key mark stays).
             Set<String> keep = new HashSet<>();

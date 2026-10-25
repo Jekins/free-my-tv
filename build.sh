@@ -54,6 +54,8 @@ fi
 ASSIST=false; [ "$(prop disable_assistant false)" = "true" ] && ASSIST=true
 CRYPTO=false; [ "$(prop show_crypto true)" = "true" ] && CRYPTO=true
 ANIMATION=false; [ "$(prop hide_animation false)" = "true" ] && ANIMATION=true
+RECS_APP="$(prop recommendations_app '')"
+case "$RECS_APP" in ''|filmix) ;; *) echo 'config.properties: recommendations_app must be empty or filmix' >&2; exit 1 ;; esac
 SAVER=true; [ "$(prop screensaver true)" = "false" ] && SAVER=false
 
 rm -rf out && mkdir -p out/gen/io/freemytv out/classes
@@ -74,6 +76,7 @@ final class Config {
     static final String CURRENCY = "$CURRENCY";
     static final String TEMPERATURE = "$(prop temperature auto)";
     static final String HIDE_SERVICES = "$(prop hide_services '')";
+    static final String RECOMMENDATIONS_APP = "$RECS_APP";
     static final String THEME = "$(prop theme auto)";
     static final boolean DISABLE_ASSISTANT = $ASSIST;
     static final boolean SHOW_CRYPTO = $CRYPTO;

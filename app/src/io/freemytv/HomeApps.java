@@ -542,7 +542,8 @@ final class HomeApps {
                 plain = intent;
                 if (plain != null) plain.addFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
                 if (intent != null && it.uri != null) {
-                    intent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(it.uri)).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(it.pkg);
+                    intent = Filmix.PKG.equals(it.pkg) ? Filmix.intent(it.uri)
+                            : new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(it.uri)).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(it.pkg);
                 }
                 break;
             case LIVE_TV:
