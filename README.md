@@ -181,7 +181,12 @@ by itself each week; the TMDB key is still needed for the pictures. If Trakt can
 `trakt_user`'s public lists (Couchmoney's), then from TMDB.
 
 Each row (Explore, Movies, Shows) starts with three cards; → past the last one brings three more. With Filmix, a title
-is looked up only when its row gets to it, so a refresh asks Filmix about a handful of titles, not all of them.
+is looked up only when its row gets to it, so a refresh asks Filmix about a handful of titles, not all of them. A card
+shows TMDB's rating and, for a movie, its year; for a show, the day its last episode aired.
+
+Holding OK on a card opens its menu: *Watch trailer* searches YouTube for the title's trailer in the TV's language, and
+*Already watched* adds it to your Trakt history; the item then turns into five stars to rate it (OK on a star gives it
+whole, OK again half a star less). The rating goes to Trakt once, a moment after the last press.
 
 ### Opening a title, not just its app (optional)
 
