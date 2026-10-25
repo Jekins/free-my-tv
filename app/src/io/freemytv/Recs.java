@@ -62,7 +62,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 6;
+    private static final int CACHE_VERSION = 7;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
@@ -439,27 +439,17 @@ final class Recs {
         // 1. Trending this week (or Trakt personal recommendations if configured), only what is
         //    on one of the TV's services: the details say where (and are then ready).
         List<Pick> hotMovies = new ArrayList<>(), hotShows = new ArrayList<>();
-        if (Trakt.hasKey() && !Config.TRAKT_USER.isEmpty()) {
+        if (Trakt.hasOAuth() || (Trakt.hasKey() && !Config.TRAKT_USER.isEmpty())) {
             try {
-                for (Trakt.Item item : Trakt.fetchListItems(Config.TRAKT_USER, Config.TRAKT_LIST_MOVIES)) {
-                    Pick pick = new Pick();
-                    pick.id = item.tmdbId;
-                    pick.kind = "movie";
-                    pick.title = item.title;
-                    pick.originalTitle = item.title;
-                    pick.year = item.year;
+                for (Trakt.Item item : traktItems("movies", Config.TRAKT_LIST_MOVIES)) {
+                    Pick pick = pickFromTrakt(item, "movie");
                     try {
                         fetchDetails(pick);
                         if (pick.pkg != null) hotMovies.add(pick);
                     } catch (Exception ignored) {}
                 }
-                for (Trakt.Item item : Trakt.fetchListItems(Config.TRAKT_USER, Config.TRAKT_LIST_SHOWS)) {
-                    Pick pick = new Pick();
-                    pick.id = item.tmdbId;
-                    pick.kind = "tv";
-                    pick.title = item.title;
-                    pick.originalTitle = item.title;
-                    pick.year = item.year;
+                for (Trakt.Item item : traktItems("shows", Config.TRAKT_LIST_SHOWS)) {
+                    Pick pick = pickFromTrakt(item, "tv");
                     try {
                         fetchDetails(pick);
                         if (pick.pkg != null) hotShows.add(pick);
@@ -521,32 +511,18 @@ final class Recs {
         if (!installed(Filmix.PKG)) throw new IOException(Filmix.UNAVAILABLE);
         List<Pick> movies = new ArrayList<>(), shows = new ArrayList<>();
 
-        if (Trakt.hasKey() && !Config.TRAKT_USER.isEmpty()) {
+        if (Trakt.hasOAuth() || (Trakt.hasKey() && !Config.TRAKT_USER.isEmpty())) {
             try {
-                List<Trakt.Item> traktMovies = Trakt.fetchListItems(Config.TRAKT_USER, Config.TRAKT_LIST_MOVIES);
-                for (Trakt.Item item : traktMovies) {
-                    Pick p = new Pick();
-                    p.id = item.tmdbId;
-                    p.kind = "movie";
-                    p.title = item.title;
-                    p.originalTitle = item.title;
-                    p.year = item.year;
-                    movies.add(p);
+                for (Trakt.Item item : traktItems("movies", Config.TRAKT_LIST_MOVIES)) {
+                    movies.add(pickFromTrakt(item, "movie"));
                 }
             } catch (Exception e) {
                 AppLog.w("Trakt movies: " + e.getMessage());
             }
 
             try {
-                List<Trakt.Item> traktShows = Trakt.fetchListItems(Config.TRAKT_USER, Config.TRAKT_LIST_SHOWS);
-                for (Trakt.Item item : traktShows) {
-                    Pick p = new Pick();
-                    p.id = item.tmdbId;
-                    p.kind = "tv";
-                    p.title = item.title;
-                    p.originalTitle = item.title;
-                    p.year = item.year;
-                    shows.add(p);
+                for (Trakt.Item item : traktItems("shows", Config.TRAKT_LIST_SHOWS)) {
+                    shows.add(pickFromTrakt(item, "tv"));
                 }
             } catch (Exception e) {
                 AppLog.w("Trakt shows: " + e.getMessage());
@@ -610,6 +586,37 @@ final class Recs {
         this.period = period;
         listAt = System.currentTimeMillis();
         listLanguage = Ui.language;
+    }
+
+    /**
+     * Trakt's personal recommendation API first; the configured public lists remain as a fallback
+     * when OAuth is missing or the recommendation endpoints return nothing.
+     */
+    private List<Trakt.Item> traktItems(String recKind, String listSlug) {
+        if (Trakt.hasOAuth()) {
+            try {
+                List<Trakt.Item> items = Trakt.fetchRecommendations(recKind);
+                if (!items.isEmpty()) return items;
+            } catch (Exception e) {
+                AppLog.w("Trakt " + recKind + " recommendations: " + e.getMessage());
+            }
+        }
+        try {
+            return Trakt.fetchListItems(Config.TRAKT_USER, listSlug);
+        } catch (Exception e) {
+            AppLog.w("Trakt " + recKind + " list: " + e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    private static Pick pickFromTrakt(Trakt.Item item, String kind) {
+        Pick p = new Pick();
+        p.id = item.tmdbId;
+        p.kind = kind;
+        p.title = item.title;
+        p.originalTitle = item.title;
+        p.year = item.year;
+        return p;
     }
 
     /** Language of titles and genres (TMDB's "fr-FR", "zh-CN"…); the services come from the region. */
@@ -791,6 +798,7 @@ final class Recs {
         stamp = stamp * 31L + Config.RECOMMENDATIONS_APP.hashCode();
         stamp = stamp * 31L + Config.TRAKT_CLIENT_ID.hashCode();
         stamp = stamp * 31L + Config.TRAKT_USER.hashCode();
+        stamp = stamp * 31L + Config.TRAKT_ACCESS_TOKEN.hashCode();
         if (FILMIX_ONLY) return stamp * 31L + (installed(Filmix.PKG) ? Filmix.PKG.hashCode() : 0);
         for (String[] service : SERVICES) stamp = stamp * 31L + (installed(service[2]) ? service[2].hashCode() : 0);
         return stamp;
