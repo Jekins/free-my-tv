@@ -62,7 +62,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 5;
+    private static final int CACHE_VERSION = 6;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
@@ -436,20 +436,54 @@ final class Recs {
         String common = "&language=" + lang() + "&watch_region=" + REGION + "&with_watch_monetization_types=flatrate&include_adult=false"
                 + "&sort_by=popularity.desc&with_watch_providers=" + URLEncoder.encode(ids.toString(), "UTF-8")
                 + (Config.HIDE_ANIMATION ? "&without_genres=" + ANIMATION : "");
-        // 1. Trending this week (TMDB goes by what people are watching and searching for right now), only what is
+        // 1. Trending this week (or Trakt personal recommendations if configured), only what is
         //    on one of the TV's services: the details say where (and are then ready).
         List<Pick> hotMovies = new ArrayList<>(), hotShows = new ArrayList<>();
-        for (String kind : new String[] {"movie", "tv"}) {
-            JSONArray hot = get("/trending/" + kind + "/week?language=" + lang()).getJSONArray("results");
-            List<Pick> candidates = new ArrayList<>();
-            for (int i = 0; i < hot.length() && i < 20; i++) add(candidates, hot.getJSONObject(i), kind);
-            for (Pick pick : candidates) {
-                try {
-                    fetchDetails(pick);
-                } catch (Exception e) {
-                    continue;
+        if (Trakt.hasKey() && !Config.TRAKT_USER.isEmpty()) {
+            try {
+                for (Trakt.Item item : Trakt.fetchListItems(Config.TRAKT_USER, Config.TRAKT_LIST_MOVIES)) {
+                    Pick pick = new Pick();
+                    pick.id = item.tmdbId;
+                    pick.kind = "movie";
+                    pick.title = item.title;
+                    pick.originalTitle = item.title;
+                    pick.year = item.year;
+                    try {
+                        fetchDetails(pick);
+                        if (pick.pkg != null) hotMovies.add(pick);
+                    } catch (Exception ignored) {}
                 }
-                if (pick.pkg != null) (kind.equals("movie") ? hotMovies : hotShows).add(pick);
+                for (Trakt.Item item : Trakt.fetchListItems(Config.TRAKT_USER, Config.TRAKT_LIST_SHOWS)) {
+                    Pick pick = new Pick();
+                    pick.id = item.tmdbId;
+                    pick.kind = "tv";
+                    pick.title = item.title;
+                    pick.originalTitle = item.title;
+                    pick.year = item.year;
+                    try {
+                        fetchDetails(pick);
+                        if (pick.pkg != null) hotShows.add(pick);
+                    } catch (Exception ignored) {}
+                }
+            } catch (Exception e) {
+                AppLog.w("Trakt recommendations: " + e.getMessage());
+            }
+        }
+        if (hotMovies.isEmpty() || hotShows.isEmpty()) {
+            for (String kind : new String[] {"movie", "tv"}) {
+                if (kind.equals("movie") && !hotMovies.isEmpty()) continue;
+                if (kind.equals("tv") && !hotShows.isEmpty()) continue;
+                JSONArray hot = get("/trending/" + kind + "/week?language=" + lang()).getJSONArray("results");
+                List<Pick> candidates = new ArrayList<>();
+                for (int i = 0; i < hot.length() && i < 20; i++) add(candidates, hot.getJSONObject(i), kind);
+                for (Pick pick : candidates) {
+                    try {
+                        fetchDetails(pick);
+                    } catch (Exception e) {
+                        continue;
+                    }
+                    if (pick.pkg != null) (kind.equals("movie") ? hotMovies : hotShows).add(pick);
+                }
             }
         }
         // 2. Recent releases on the TV's services: movies from the past year and shows with a new episode in the
@@ -486,37 +520,87 @@ final class Recs {
     private void fetchFilmixList(int period) throws Exception {
         if (!installed(Filmix.PKG)) throw new IOException(Filmix.UNAVAILABLE);
         List<Pick> movies = new ArrayList<>(), shows = new ArrayList<>();
-        for (String kind : new String[] {"movie", "tv"}) {
-            JSONArray hot = get("/trending/" + kind + "/week?language=" + lang()).getJSONArray("results");
-            List<Pick> target = kind.equals("movie") ? movies : shows;
-            for (int i = 0; i < hot.length() && i < 20; i++) add(target, hot.getJSONObject(i), kind);
+
+        if (Trakt.hasKey() && !Config.TRAKT_USER.isEmpty()) {
+            try {
+                List<Trakt.Item> traktMovies = Trakt.fetchListItems(Config.TRAKT_USER, Config.TRAKT_LIST_MOVIES);
+                for (Trakt.Item item : traktMovies) {
+                    Pick p = new Pick();
+                    p.id = item.tmdbId;
+                    p.kind = "movie";
+                    p.title = item.title;
+                    p.originalTitle = item.title;
+                    p.year = item.year;
+                    movies.add(p);
+                }
+            } catch (Exception e) {
+                AppLog.w("Trakt movies: " + e.getMessage());
+            }
+
+            try {
+                List<Trakt.Item> traktShows = Trakt.fetchListItems(Config.TRAKT_USER, Config.TRAKT_LIST_SHOWS);
+                for (Trakt.Item item : traktShows) {
+                    Pick p = new Pick();
+                    p.id = item.tmdbId;
+                    p.kind = "tv";
+                    p.title = item.title;
+                    p.originalTitle = item.title;
+                    p.year = item.year;
+                    shows.add(p);
+                }
+            } catch (Exception e) {
+                AppLog.w("Trakt shows: " + e.getMessage());
+            }
         }
+
+        if (movies.isEmpty()) {
+            JSONArray hot = get("/trending/movie/week?language=" + lang()).getJSONArray("results");
+            for (int i = 0; i < hot.length() && i < 20; i++) add(movies, hot.getJSONObject(i), "movie");
+        }
+        if (shows.isEmpty()) {
+            JSONArray hot = get("/trending/tv/week?language=" + lang()).getJSONArray("results");
+            for (int i = 0; i < hot.length() && i < 20; i++) add(shows, hot.getJSONObject(i), "tv");
+        }
+
         List<Pick> candidates = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        alternate(candidates, seen, movies, shows, 40);
-        movies.clear();
-        shows.clear();
-        String common = "&language=" + lang() + "&include_adult=false&sort_by=popularity.desc"
-                + (Config.HIDE_ANIMATION ? "&without_genres=" + ANIMATION : "");
-        JSONArray recentMovies = get("/discover/movie?vote_count.gte=30&primary_release_date.gte=" + day(-365)
-                + "&primary_release_date.lte=" + day(0) + common).getJSONArray("results");
-        JSONArray recentShows = get("/discover/tv?vote_count.gte=20&air_date.gte=" + day(-90)
-                + "&air_date.lte=" + day(0) + common).getJSONArray("results");
-        for (int i = 0; i < recentMovies.length(); i++) add(movies, recentMovies.getJSONObject(i), "movie");
-        for (int i = 0; i < recentShows.length(); i++) add(shows, recentShows.getJSONObject(i), "tv");
-        alternate(candidates, seen, movies, shows, 60);
+        alternate(candidates, seen, movies, shows, 50);
+
+        if (candidates.size() < 40) {
+            String common = "&language=" + lang() + "&include_adult=false&sort_by=popularity.desc"
+                    + (Config.HIDE_ANIMATION ? "&without_genres=" + ANIMATION : "");
+            JSONArray recentMovies = get("/discover/movie?vote_count.gte=30&primary_release_date.gte=" + day(-365)
+                    + "&primary_release_date.lte=" + day(0) + common).getJSONArray("results");
+            JSONArray recentShows = get("/discover/tv?vote_count.gte=20&air_date.gte=" + day(-90)
+                    + "&air_date.lte=" + day(0) + common).getJSONArray("results");
+            List<Pick> discMovies = new ArrayList<>(), discShows = new ArrayList<>();
+            for (int i = 0; i < recentMovies.length(); i++) add(discMovies, recentMovies.getJSONObject(i), "movie");
+            for (int i = 0; i < recentShows.length(); i++) add(discShows, recentShows.getJSONObject(i), "tv");
+            alternate(candidates, seen, discMovies, discShows, 60);
+        }
+
         List<Pick> confirmed = new ArrayList<>();
         for (Pick pick : candidates) {
             if (pick.year < 1888) continue;
+            // Pre-fetch TMDB details if backdrop is missing (e.g. from Trakt) so localized title and originalTitle are set
+            if (pick.backdrop == null) {
+                try {
+                    fetchDetails(pick);
+                } catch (Exception e) {
+                    continue;
+                }
+            }
             String link = Filmix.find(context, pick.title, pick.originalTitle, pick.year, pick.kind.equals("tv"));
             if (link == null) continue;
             pick.app = "filmix";
             pick.pkg = Filmix.PKG;
             pick.link = link;
-            try {
-                fetchDetails(pick);
-            } catch (Exception e) {
-                continue;   // a missing TMDB detail must not make an unverified or incomplete card visible
+            if (!pick.detailed) {
+                try {
+                    fetchDetails(pick);
+                } catch (Exception e) {
+                    continue;   // a missing TMDB detail must not make an unverified or incomplete card visible
+                }
             }
             confirmed.add(pick);
             if (confirmed.size() >= 24) break;
@@ -580,6 +664,11 @@ final class Recs {
                 + "?language=" + lang() + "&append_to_response=" + (FILMIX_ONLY ? "images" : "watch/providers,images")
                 + "&include_image_language=null," + Ui.language.replaceAll("-.*", "") + ",en");
         p.title = title(p, o);
+        String origField = p.kind.equals("movie") ? "original_title" : "original_name";
+        String orig = o.optString(origField, "");
+        if (!orig.isEmpty()) p.originalTitle = orig;
+        String date = o.optString(p.kind.equals("movie") ? "release_date" : "first_air_date");
+        if (date.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) p.year = Integer.parseInt(date.substring(0, 4));
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
         List<String> parts = new ArrayList<>();
@@ -700,6 +789,8 @@ final class Recs {
     private long sourceStamp() {
         long stamp = (Config.TMDB_KEY.hashCode() * 31L + REGION.hashCode()) * 31L + (Config.HIDE_ANIMATION ? 1 : 0);
         stamp = stamp * 31L + Config.RECOMMENDATIONS_APP.hashCode();
+        stamp = stamp * 31L + Config.TRAKT_CLIENT_ID.hashCode();
+        stamp = stamp * 31L + Config.TRAKT_USER.hashCode();
         if (FILMIX_ONLY) return stamp * 31L + (installed(Filmix.PKG) ? Filmix.PKG.hashCode() : 0);
         for (String[] service : SERVICES) stamp = stamp * 31L + (installed(service[2]) ? service[2].hashCode() : 0);
         return stamp;

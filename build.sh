@@ -57,6 +57,13 @@ ANIMATION=false; [ "$(prop hide_animation false)" = "true" ] && ANIMATION=true
 RECS_APP="$(prop recommendations_app '')"
 case "$RECS_APP" in ''|filmix) ;; *) echo 'config.properties: recommendations_app must be empty or filmix' >&2; exit 1 ;; esac
 SAVER=true; [ "$(prop screensaver true)" = "false" ] && SAVER=false
+TRAKT_CLIENT_ID="$(prop trakt_client_id '')"
+if [ -z "$TRAKT_CLIENT_ID" ] && [ -f ../trakt-client-id.txt ]; then
+  TRAKT_CLIENT_ID="$(head -n 1 ../trakt-client-id.txt | tr -d '\r\n')"
+fi
+TRAKT_USER="$(prop trakt_user 'artem-zhekov-898227')"
+TRAKT_LIST_MOVIES="$(prop trakt_list_movies 'movies-recommendations-couchmoney-tv')"
+TRAKT_LIST_SHOWS="$(prop trakt_list_shows 'tv-recommendations-couchmoney-tv')"
 
 rm -rf out && mkdir -p out/gen/io/freemytv out/classes
 cat > out/gen/io/freemytv/Config.java <<EOF
@@ -68,6 +75,10 @@ final class Config {
 
     static final String TMDB_KEY = "$(prop tmdb_key '')";
     static final String WATCHMODE_KEY = "$(prop watchmode_key '')";
+    static final String TRAKT_CLIENT_ID = "$TRAKT_CLIENT_ID";
+    static final String TRAKT_USER = "$TRAKT_USER";
+    static final String TRAKT_LIST_MOVIES = "$TRAKT_LIST_MOVIES";
+    static final String TRAKT_LIST_SHOWS = "$TRAKT_LIST_SHOWS";
     static final String TMDB_REGION = "$REGION";
     static final String LATITUDE = "$LAT";
     static final String LONGITUDE = "$LON";
