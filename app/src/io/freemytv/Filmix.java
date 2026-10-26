@@ -49,11 +49,21 @@ final class Filmix {
 
     private static String search(Context context, String query, String title, String original,
                                  int year, boolean series) throws IOException {
-        Future<String> future;
-        try {
-            future = IO.submit(() -> query(context, query, title, original, year, series));
-        } catch (RuntimeException e) {
-            throw new IOException(UNAVAILABLE);
+        Future<String> future = null;
+        // Right after an answer, the one thread may not be waiting for the next question yet (there's no queue): a
+        // moment, then again. One still busy with a call past its timeout refuses them all, as it should.
+        for (int tries = 0; future == null; tries++) {
+            try {
+                future = IO.submit(() -> query(context, query, title, original, year, series));
+            } catch (RuntimeException e) {
+                if (tries >= 4) throw new IOException(UNAVAILABLE);
+                try {
+                    Thread.sleep(25);
+                } catch (InterruptedException stop) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(UNAVAILABLE);
+                }
+            }
         }
         try {
             return future.get(8, TimeUnit.SECONDS);

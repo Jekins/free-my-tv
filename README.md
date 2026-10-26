@@ -26,7 +26,7 @@ Open source. Built with Claude Code. One button to undo.
 - **A screensaver to match.** Full-screen photos of the picks with a big glass clock. Optionally (*Watch from the screensaver*, in Home Settings), OK opens the title on screen in its app, and any other button just closes it.
 - **Your own photos** (Google TV and Android TV). Send them from your computer (up to 100): the screensaver shows them, and without picks one is the home screen's background each hour.
 - **Fast.** 60 fps, every frame in 16.6 ms, on the TV's own chip. The home screen uses 96 MB of memory instead of 242 MB (−60%).<br><sub>Measured on a 98″ TCL Google TV running Android 14.</sub>
-- **Set up on the TV.** Language, your city, temperature, theme, the weather and prices cards, the forecast's hours or days, which coins, and the apps on the shelf, in Free My TV's own settings.
+- **Set up on the TV.** Language, your city, temperature, theme, the weather and prices cards, the forecast's hours or days, which coins, and the apps on the shelf, in Free My TV's own settings (*Home Settings*, in the drawer). The gear at the top right opens the TV's picture settings, as Google TV's own home screen does.
 - **Safe.** No root. Nothing is uninstalled. One button brings back the factory home screen.
 
 ## Install
@@ -196,12 +196,21 @@ undo).
 
 The Watchlist tab, after Shows, has your Trakt watchlist, the latest added first, and before it the shows you watch with
 episodes out since you last watched (the last 20 shows you watched, an episode from the past year): their card says how
-many you haven't seen. It follows Trakt every half hour.
+many you haven't seen. It follows Trakt every half hour. All of it shows, Filmix's or not: a title Filmix hasn't says so
+on its card, as in the search.
 
 Holding OK on the Movies or Shows tab opens its filters: year (by decade), rating (6, 7 or 8 and up, Trakt's), genre and,
 for shows, status (on the air, coming, ended, canceled), each *All* at first. ← → change a filter; OK or Back applies
 them. Trakt filters its recommendations itself, so a filter reaches past the unfiltered list's end; a filtered tab has a
 blue dot. Explore stays unfiltered.
+
+The magnifier before the tabs searches Trakt (its client ID is enough, no sign-in): OK on it turns the tabs into a field
+and brings up the TV's keyboard. A moment after the typing stops, the
+row shows the movies and shows Trakt finds, in any language Trakt has their titles in, the most watched first; each
+card comes as it's looked up, like the picks. ↓ goes to them; ↑ or Back goes back to the field, and Back from there to
+the tabs. The microphone at the field's right end (→ from the text), or the remote's search key with the field open,
+asks the TV's voice input (Google's on Google TV): what you say is searched at once. Every answer shows, Filmix's or not: one Filmix hasn't says so on its card, and its menu (trailer, watched,
+watchlist) still works. The text stays until Home.
 
 ### Opening a title, not just its app (optional)
 

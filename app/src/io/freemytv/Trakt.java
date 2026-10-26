@@ -20,7 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Trakt API client: personal recommendations (OAuth) and public user lists (client ID only).
+ * Trakt API client: personal recommendations (OAuth), public user lists and search (client ID only).
  * List fetching stays so Couchmoney-style slugs still work if OAuth is not set up. The tokens come built into the app
  * (tools/trakt_login.py) or from signing in on the TV (Home Settings → Trakt), which wins until a build brings others.
  */
@@ -322,6 +322,8 @@ final class Trakt {
         int[] status = new int[1];
         JSONObject answer = post(API + path, body, clientId, access(false), status);
         if (status[0] == 401) answer = post(API + path, body, clientId, access(true), status);
+        // What Trakt did (added, existing, not found: counts and ids, no token), as a write's only trace
+        AppLog.w("Trakt " + path + " " + kind + " " + tmdbId + ": HTTP " + status[0] + " " + answer);
         if (status[0] != 200 && status[0] != 201) throw new IOException("Trakt returned HTTP " + status[0]);   // 420: a limit
         JSONObject missing = answer.optJSONObject("not_found");
         JSONArray lost = missing == null ? null : missing.optJSONArray(list);
@@ -373,6 +375,39 @@ final class Trakt {
             if (item != null) items.add(item);
         }
         return items;
+    }
+
+    /**
+     * Trakt's search for movies and shows (the client ID is enough), in any language Trakt has their titles in. Its
+     * matching minds the case of Cyrillic letters ("дюна" finds nothing, "Дюна" finds Dune), so the query starts with a
+     * capital, as titles do. Trakt scores many answers alike: the most watched go first (by votes), its own order
+     * breaking near ties ("Друзья": Friends, 5th in Trakt's order, comes first). Throws when Trakt can't be asked.
+     */
+    static List<Item> search(String query, int limit) throws IOException {
+        List<Item> items = new ArrayList<>();
+        String q = query.trim();
+        if (q.isEmpty()) return items;
+        int first = q.offsetByCodePoints(0, 1);
+        q = new String(Character.toChars(Character.toTitleCase(q.codePointAt(0)))) + q.substring(first);
+        String path = "/search/movie,show?query=" + URLEncoder.encode(q, "UTF-8").replace("+", "%20")
+                + "&extended=full&limit=" + limit;
+        JSONArray array;
+        try {
+            array = getArray(path, false);
+        } catch (org.json.JSONException e) {
+            throw new IOException("Trakt search: " + e.getMessage());
+        }
+        List<float[]> ranked = new ArrayList<>();   // {score, index}
+        for (int i = 0; i < array.length(); i++) {
+            Item item = parseItem(array.optJSONObject(i), null);
+            if (item == null) continue;
+            ranked.add(new float[] {(float) Math.log10(item.votes + 1) - 0.15f * items.size(), items.size()});
+            items.add(item);
+        }
+        java.util.Collections.sort(ranked, (a, b) -> Float.compare(b[0], a[0]));
+        List<Item> out = new ArrayList<>();
+        for (float[] r : ranked) out.add(items.get((int) r[1]));
+        return out;
     }
 
     /**

@@ -40,6 +40,7 @@ import java.util.concurrent.Executors;
  * Movies, Shows) shows four (the fourth's edge past the other three); the focus on the last card asks for three more
  * ({@link #more}). With Filmix, a title is looked up in Filmix only when its row gets to it: the rest wait in a queue.
  * Movies and Shows can be filtered (year, rating, genre, a show's status): Trakt filters its recommendations for them.
+ * The search field's row shows Trakt's answers for what is typed, each looked up the same way ({@link #search}).
  * "Watch" opens the service's app.
  *
  * Each person uses their own free TMDB key (config.properties "tmdb_key", built into the app). It never goes to the log.
@@ -55,6 +56,8 @@ final class Recs {
         int year;
         float rating;           // Trakt's average for its picks, else TMDB's (0 to 10); 0 = too few votes to say
         boolean detailed;
+        boolean searched;       // only a search's answer: its photo goes to a folder of its own, not the rows'
+        boolean nowhere;        // none of the TV's apps has it (with Filmix: Filmix said so): only the watchlist shows it
         java.io.File photo;     // one of your own photos (Photos): no title, no caption
     }
 
@@ -68,6 +71,10 @@ final class Recs {
 
     /** The Watchlist row's kind (its titles are movies and shows). */
     static final String WATCHLIST = "watchlist";
+    /** The search field's row (Trakt's answers: movies and shows). */
+    static final String SEARCH = "search";
+    /** Where a search is: nothing typed; asking Trakt; its answers coming in; all in; Trakt didn't answer. */
+    static final int SEARCH_IDLE = 0, SEARCH_ASKING = 1, SEARCH_FILLING = 2, SEARCH_DONE = 3, SEARCH_FAILED = 4;
 
     /**
      * A row's filters (Movies or Shows: hold OK on its tab), which Trakt applies to its recommendations: indexes into
@@ -273,9 +280,24 @@ final class Recs {
     /** Per row: a new filter starts a new generation, and the lookups and answers of the one before are dropped. */
     private final int[] generation = new int[4];
     private final long[] filterTriedAt = new long[4];
+    /** Filmix answers one question at a time (a second one at once is refused): the rows and the search take turns. */
+    private static final Object FILMIX = new Object();
+    // The search: Trakt asked on a thread of its own, TMDB's details for its answers a few at a time, then Filmix for
+    // each in order; a newer text (generation) drops what an older one was doing.
+    private static final int SEARCH_MAX = 12;
+    private final ExecutorService searchIo = Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.ThreadPoolExecutor searchDetails = new java.util.concurrent.ThreadPoolExecutor(4, 4,
+            30, java.util.concurrent.TimeUnit.SECONDS, new java.util.concurrent.LinkedBlockingQueue<>());
+    private volatile int searchGen, searchState = SEARCH_IDLE, searchExpected;
+    private volatile String searchText = "";
+    private volatile List<Pick> found = new ArrayList<>();
+    /** Answers already looked up, by key, least recently used first: typing on (or again) doesn't ask again. */
+    private final Map<String, Pick> searchKnown = new LinkedHashMap<>(16, 0.75f, true);
+    private String searchLanguage = "";
 
     private Recs(Context c) {
         context = c;
+        searchDetails.allowCoreThreadTimeOut(true);
         cache = c.getSharedPreferences("recs", Context.MODE_PRIVATE);
         hiddenPrefs = c.getSharedPreferences("recs-hidden", Context.MODE_PRIVATE);
         hidden.addAll(hiddenPrefs.getStringSet("keys", new HashSet<>()));
@@ -344,12 +366,13 @@ final class Recs {
 
     /** For the settings: the titles ready to show and, with Filmix, how many still wait to be looked up. */
     private void writeStatus() {
-        int waiting;
+        int waiting, ready = 0;
         synchronized (queue) {
             waiting = queue.size();
         }
+        for (Pick p : picks) if (!p.nowhere) ready++;
         try (FileOutputStream out = new FileOutputStream(new File(context.getFilesDir(), "recs-status.json"))) {
-            out.write(new JSONObject().put("count", picks.size()).put("waiting", waiting).put("error", error)
+            out.write(new JSONObject().put("count", ready).put("waiting", waiting).put("error", error)
                     .put("at", System.currentTimeMillis()).toString().getBytes(StandardCharsets.UTF_8));
         } catch (Exception ignored) {
         }
@@ -376,6 +399,7 @@ final class Recs {
 
     /** A row's cards in order, as many as it shows now: movies only ("movie"), shows only ("tv") or both (null). */
     List<Pick> now(String kind) {
+        if (SEARCH.equals(kind)) return new ArrayList<>(found);
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
         if (FILMIX_ONLY && !filmixCurrent()) return list;
@@ -457,8 +481,31 @@ final class Recs {
             row.add(0, k);   // its new episodes keep it there
         }
         rowTitles.put(WATCHLIST, row);
-        notifyListeners();
-        io.execute(this::save);
+        if (!on || !p.searched) {
+            notifyListeners();
+            io.execute(this::save);
+            return;
+        }
+        io.execute(() -> {
+            adopt(p);
+            notifyListeners();
+            save();
+        });
+    }
+
+    /**
+     * io thread: a search's answer put on the watchlist joins the rows' titles, so the Watchlist row shows it now, not
+     * at Trakt's next answer: once Filmix (or the TV's apps) is known to have it or not.
+     */
+    private void adopt(Pick p) {
+        boolean streams = p.pkg != null && (!FILMIX_ONLY || filmixPick(p));
+        if (!p.detailed || !(streams || away(p))) return;
+        for (Pick have : picks) if (key(have).equals(key(p))) return;
+        p.searched = false;   // its photo from now on in the rows' folder
+        p.nowhere = !streams;
+        List<Pick> list = new ArrayList<>(picks);
+        list.add(p);
+        picks = list;
     }
 
     /** Main thread: marked watched from here, a show has no new episodes left (until Trakt says otherwise). */
@@ -511,7 +558,7 @@ final class Recs {
                 keys.add(key(pick));
                 found.add(pick);
             }
-            List<String> row = enqueue(found, candidates);
+            List<String> row = enqueue(found, candidates, true);
             watchlist = keys;
             newEpisodes = counts;
             rowTitles.put(WATCHLIST, row);
@@ -606,17 +653,17 @@ final class Recs {
         List<Trakt.Item> items = Trakt.recommendations(kind.equals("movie") ? "movies" : "shows", f.query(kind), 100);
         List<Pick> found = new ArrayList<>();
         for (Trakt.Item item : items) found.add(pickFromTrakt(item, kind));
-        List<String> keys = enqueue(found, candidates);
+        List<String> keys = enqueue(found, candidates, false);
         AppLog.w("Trakt filtered " + kind + " " + f.saved() + ": " + keys.size() + " titles");
         return keys;
     }
 
     /**
-     * A row's own titles: their keys in order, without the ones Filmix doesn't have or repeats; the ones not known yet
-     * go to the queue, or into `candidates` while the list is being made (then only the new list counts as known: the
-     * titles of the one it replaces are looked up again with the others).
+     * A row's own titles: their keys in order, without repeats or (but on the watchlist, `all`) the ones Filmix doesn't
+     * have; the ones not known yet go to the queue, or into `candidates` while the list is being made (then only the new
+     * list counts as known: the titles of the one it replaces are looked up again with the others).
      */
-    private List<String> enqueue(List<Pick> found, List<Pick> candidates) {
+    private List<String> enqueue(List<Pick> found, List<Pick> candidates, boolean all) {
         Set<String> known = new HashSet<>();
         if (candidates == null) for (Pick p : picks) known.add(key(p));
         List<String> keys = new ArrayList<>();
@@ -626,7 +673,7 @@ final class Recs {
             else for (Pick p : candidates) known.add(key(p));
             for (Pick p : found) {
                 String k = key(p);
-                if (missing.contains(k) || !seen.add(k)) continue;
+                if ((!all && missing.contains(k)) || !seen.add(k)) continue;
                 keys.add(k);
                 if (!known.add(k)) continue;
                 if (candidates != null) candidates.add(p);
@@ -637,6 +684,7 @@ final class Recs {
     }
 
     private boolean visible(Pick p, String kind, Map<String, Boolean> have) {
+        if (WATCHLIST.equals(kind) && away(p)) return true;   // the watchlist has it all, marked when no app has it
         return (!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(WATCHLIST) || kind.equals(p.kind))
                 && (WATCHLIST.equals(kind) || !hidden.contains(key(p)))
                 && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)));   // app missing: skip
@@ -651,7 +699,7 @@ final class Recs {
      * now, one at a time, and each card shows as soon as its title is confirmed. False when the row has nothing more.
      */
     boolean more(String kind) {
-        if (!hasMore(kind)) return false;
+        if (SEARCH.equals(kind) || !hasMore(kind)) return false;   // a search's answers come by themselves
         int r = row(kind);
         shown[r] += PAGE;
         if (count(kind) < shown[r]) lookUp(kind);
@@ -693,6 +741,7 @@ final class Recs {
 
     /** The row's next titles are being looked up (its last cards are still empty). */
     boolean loading(String kind) {
+        if (SEARCH.equals(kind)) return searchState == SEARCH_ASKING || searchState == SEARCH_FILLING;
         return loadingMore[row(kind)] || (WATCHLIST.equals(kind) && watchLoading && !rowTitles.containsKey(WATCHLIST));
     }
 
@@ -749,13 +798,13 @@ final class Recs {
         }
         if (next != null) {
             try {
-                if (confirm(next)) {
+                boolean found = confirm(next);
+                if (!found) missing.add(key(next));
+                if (found || keepAway(next)) {
                     List<Pick> list = new ArrayList<>(picks);
                     list.add(next);
                     picks = list;
                     notifyListeners();
-                } else {
-                    missing.add(key(next));
                 }
             } catch (IOException e) {   // Filmix can't be asked now: the title goes back for the next try
                 synchronized (queue) {
@@ -814,6 +863,11 @@ final class Recs {
         return (cut > 0 ? t.substring(0, cut) : t).trim();
     }
 
+    /** The one app every pick opens in ("Filmix"), or null when each opens in the service that streams it. */
+    static String onlyApp() {
+        return FILMIX_ONLY ? SERVICE_NAME.get("filmix") : null;
+    }
+
     /** Name of the service the pick is on ("Netflix"), or empty. */
     static String serviceName(Pick p) {
         return p == null || p.app == null ? "" : SERVICE_NAME.get(p.app);
@@ -848,6 +902,12 @@ final class Recs {
 
     /** How many cards the row shows now, counting the ones still being looked up. Main thread. */
     int shown(String kind) {
+        if (SEARCH.equals(kind)) {
+            // Until Trakt answers, the answers there are (or four empty cards); then as many as Trakt gave.
+            List<Pick> list = found;
+            return searchState == SEARCH_FILLING ? searchExpected
+                    : searchState == SEARCH_ASKING && list.isEmpty() ? FIRST : list.size();
+        }
         return shown[row(kind)];
     }
 
@@ -855,8 +915,9 @@ final class Recs {
         return p.backdrop != null && imageFile(p).exists();
     }
 
+    /** A search's answers keep their photos apart: the rows' (and the screensaver's) stay on disk. */
     private File imageFile(Pick p) {
-        return new File(new File(context.getCacheDir(), "recs"), p.backdrop.replace("/", ""));
+        return new File(new File(context.getCacheDir(), p.searched ? "recs-search" : "recs"), p.backdrop.replace("/", ""));
     }
 
     /** With a key: fetches the list if stale or the time of day (morning/afternoon/night) changed; then the details. */
@@ -998,6 +1059,143 @@ final class Recs {
             for (Pick p : now(kind)) if (seen.add(key(p))) out.add(p);
         }
         return out;
+    }
+
+    // MARK: - Search (the search field's row)
+
+    /** Where the search is (SEARCH_IDLE…). */
+    int searchState() {
+        return searchState;
+    }
+
+    /**
+     * A search's answer or a watchlist's title Filmix doesn't have (without Filmix: none of the TV's apps streams it).
+     * False while that isn't known: Filmix couldn't be asked, and is asked again at the next search for it.
+     */
+    boolean away(Pick p) {
+        return p.pkg == null && p.detailed && (!FILMIX_ONLY || p.nowhere || missing.contains(key(p)));
+    }
+
+    /** What the search's answers are for. */
+    String searchText() {
+        return searchText;
+    }
+
+    /**
+     * Main thread: the search row's answers for `text` (empty: none). Until Trakt answers, the row keeps the ones it has;
+     * then the new ones come in order, each as soon as it's looked up, and a newer text drops them. A failed search is
+     * asked again for the same text.
+     */
+    void search(String text) {
+        String q = text == null ? "" : text.trim();
+        if (q.equals(searchText) && searchState != SEARCH_FAILED) return;
+        searchText = q;
+        int gen = ++searchGen;
+        if (q.isEmpty() || !Trakt.hasKey() || !hasKey(context)) {
+            found = new ArrayList<>();
+            searchState = SEARCH_IDLE;
+        } else {
+            searchState = SEARCH_ASKING;
+            searchIo.execute(() -> runSearch(q, gen));
+        }
+        notifyListeners();
+    }
+
+    /**
+     * searchIo: Trakt's answers (SEARCH_MAX at most, most watched first), the ones known already as they are; TMDB's
+     * details for the others four at a time; then, in order, Filmix for each (the rows' lookups wait their turn), the row
+     * taking each answer once it's done. Every answer shows, Filmix's or not: a search is for finding, and the menu
+     * works on any of them (the card says where Filmix hasn't it).
+     */
+    private void runSearch(String q, int gen) {
+        List<Trakt.Item> items;
+        try {
+            items = Trakt.search(q, 20);
+        } catch (IOException e) {
+            AppLog.w("Trakt search: " + e.getMessage());
+            main.post(() -> {
+                if (gen != searchGen) return;
+                found = new ArrayList<>();
+                searchState = SEARCH_FAILED;
+                notifyListeners();
+            });
+            return;
+        }
+        Map<String, Pick> known = new HashMap<>();
+        for (Pick p : picks) if (p.detailed) known.put(key(p), p);
+        List<Pick> answers = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        synchronized (searchKnown) {
+            if (!searchLanguage.equals(Ui.language)) {   // their titles and details are in another language
+                searchKnown.clear();
+                searchLanguage = Ui.language;
+            }
+            for (Trakt.Item item : items) {
+                if (answers.size() >= SEARCH_MAX) break;
+                Pick p = pickFromTrakt(item, item.type.equals("show") ? "tv" : "movie");
+                String k = key(p);
+                if (!seen.add(k)) continue;
+                Pick had = known.get(k);
+                if (had == null) had = searchKnown.get(k);
+                if (had == null) p.searched = true;
+                answers.add(had != null ? had : p);
+            }
+        }
+        List<java.util.concurrent.Future<Boolean>> asked = new ArrayList<>();
+        for (Pick p : answers) asked.add(searchDetails.submit(() -> gen == searchGen && (p.detailed || details(p))));
+        List<Pick> out = new ArrayList<>();
+        for (int i = 0; i < answers.size(); i++) {
+            if (gen != searchGen) return;
+            Pick p = answers.get(i);
+            boolean ok;
+            try {
+                ok = asked.get(i).get();
+            } catch (Exception e) {
+                ok = false;
+            }
+            if (!ok) continue;
+            if (FILMIX_ONLY && p.pkg == null && p.year >= 1888 && !missing.contains(key(p))) {
+                try {
+                    String link;
+                    synchronized (FILMIX) {
+                        link = Filmix.find(context, p.title, p.originalTitle, p.year, p.kind.equals("tv"));
+                    }
+                    if (link == null) {
+                        missing.add(key(p));
+                    } else {
+                        p.app = "filmix";
+                        p.pkg = Filmix.PKG;
+                        p.link = link;
+                        p.nowhere = false;   // a watchlist's title Filmix has now
+                    }
+                } catch (IOException e) {   // asked again at the next search for it
+                    AppLog.w("Filmix (search): " + e.getMessage());
+                }
+            }
+            if (p.searched) {
+                synchronized (searchKnown) {
+                    searchKnown.put(key(p), p);
+                    while (searchKnown.size() > 60) searchKnown.remove(searchKnown.keySet().iterator().next());
+                }
+            }
+            out.add(p);
+            List<Pick> shown = new ArrayList<>(out);
+            int expected = out.size() + answers.size() - 1 - i;   // the ones still to come, if they all do
+            main.post(() -> {
+                if (gen != searchGen) return;
+                found = shown;
+                searchExpected = expected;
+                searchState = SEARCH_FILLING;
+                notifyListeners();
+            });
+        }
+        main.post(() -> {
+            if (gen != searchGen) return;
+            found = new ArrayList<>(out);
+            searchState = SEARCH_DONE;
+            notifyListeners();
+        });
+        AppLog.w("Trakt search “" + q + "”: " + items.size() + " answers, " + out.size() + " shown");
     }
 
     /** Movies and shows are numbered separately on TMDB: a pick is identified by type + number. */
@@ -1180,12 +1378,18 @@ final class Recs {
                 Pick next = next(rest, kind, true);
                 if (next == null) break;
                 checked++;
-                if (confirm(next)) confirmed.add(next);
-                else missing.add(key(next));
+                if (confirm(next)) {
+                    confirmed.add(next);
+                } else {
+                    missing.add(key(next));
+                    if (keepAway(next)) confirmed.add(next);
+                }
             }
         }
-        AppLog.w("Filmix: " + confirmed.size() + " of " + checked + " titles found, " + rest.size() + " waiting");
-        if (confirmed.isEmpty()) throw new IOException("No matching TMDB titles were found in Filmix");
+        int on = 0;
+        for (Pick p : confirmed) if (!p.nowhere) on++;
+        AppLog.w("Filmix: " + on + " of " + checked + " titles found, " + rest.size() + " waiting");
+        if (on == 0) throw new IOException("No matching TMDB titles were found in Filmix");
         picks = confirmed;
         synchronized (queue) {
             queue.clear();
@@ -1205,7 +1409,10 @@ final class Recs {
         if (!FILMIX_ONLY) return (pick.detailed || details(pick)) && pick.pkg != null;
         if (pick.year < 1888) return false;
         if (pick.backdrop == null && !details(pick)) return false;
-        String link = Filmix.find(context, pick.title, pick.originalTitle, pick.year, pick.kind.equals("tv"));
+        String link;
+        synchronized (FILMIX) {
+            link = Filmix.find(context, pick.title, pick.originalTitle, pick.year, pick.kind.equals("tv"));
+        }
         if (link == null) {
             AppLog.w("Filmix: not found “" + pick.title + "” / “" + pick.originalTitle + "” (" + pick.year + ")");
             return false;
@@ -1214,6 +1421,17 @@ final class Recs {
         pick.pkg = Filmix.PKG;
         pick.link = link;
         return pick.detailed || details(pick);   // a missing TMDB detail must not make an incomplete card visible
+    }
+
+    /**
+     * A title no app of the TV has (Filmix said so) that is on the watchlist: its card shows there all the same, marked
+     * so, and nowhere else. False for the others, and without its TMDB details.
+     */
+    private boolean keepAway(Pick pick) {
+        List<String> keys = rowTitles.get(WATCHLIST);
+        if (pick.pkg != null || keys == null || !keys.contains(key(pick)) || !(pick.detailed || details(pick))) return false;
+        pick.nowhere = true;
+        return true;
     }
 
     private boolean details(Pick pick) {
@@ -1589,7 +1807,7 @@ final class Recs {
 
     private void download(Pick p) throws IOException {
         if (p.backdrop == null) return;   // TMDB has no image for it: the card shows without one
-        fetch(IMAGES + p.backdrop, imageFile(p), 24);
+        fetch(IMAGES + p.backdrop, imageFile(p), p.searched ? 16 : 24);
     }
 
     /** Saves `url` as `f` unless it's there already; its folder keeps its newest `keep` files. */
@@ -1734,7 +1952,7 @@ final class Recs {
                 .put("logo", p.logo == null ? "" : p.logo)
                 .put("link", p.link == null ? "" : p.link).put("meta", p.meta)
                 .put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg).put("detailed", p.detailed)
-                .put("rec", p.rec);
+                .put("rec", p.rec).put("nowhere", p.nowhere);
     }
 
     private static List<Pick> parse(JSONArray a) {
@@ -1757,6 +1975,7 @@ final class Recs {
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.detailed = o.optBoolean("detailed");
             p.rec = o.optBoolean("rec");
+            p.nowhere = o.optBoolean("nowhere");
             out.add(p);
         }
         return out;
