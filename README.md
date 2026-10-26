@@ -156,6 +156,13 @@ The first values come from `config.properties`, created by the first build (Goog
 
 Changed something? Run `./build.sh` and install again. Keep `freemytv.keystore`: updates are signed with it.
 
+On Google TV and Android TV the settings (the app's icon) look like Apple TV's, in Liquid Glass, over a dark graphite
+background: on the left the screen's symbol on a glass tile, its title and what the focused row does (or why it can't);
+on the right the rows on a glass platter, the white focus gliding between them and a long list scrolling under it.
+Signing out of Trakt and removing your photos ask first, Cancel focused. *About* has the two home screens compared, the
+picks' state with TMDB's credit, and the latest notices. This build shows its name as *Jekins TV* (`Ui.NAME`; the code,
+the catalogues and the package keep Free My TV's).
+
 ### The TMDB key
 
 Free, and it takes two minutes: create an account at [themoviedb.org](https://www.themoviedb.org/signup), then open [Settings → API](https://www.themoviedb.org/settings/api) and request a developer key. Paste the *API Read Access Token* (or the *API Key*) after `tmdb_key=`. It's your key: `config.properties` stays out of git.

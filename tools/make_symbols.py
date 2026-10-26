@@ -21,6 +21,10 @@ MAP = {
     "keystone": ("settings_overscan", 1), "cast": ("cast", 1), "hide": ("visibility_off", 1),
     "bookmark_add": ("bookmark_add", 0), "bookmark_remove": ("bookmark_remove", 0), "search": ("search", 0, 700, 200),   # as heavy as the filled gear beside it
     "mic": ("mic", 1),
+    # The settings' screens, on their glass tile.
+    "remote": ("settings_remote", 1), "tune": ("tune", 0), "account": ("account_circle", 1), "info": ("info", 1),
+    "language": ("language", 0), "location": ("location_on", 1), "photos": ("photo_library", 1), "movie": ("movie", 1),
+    "widgets": ("widgets", 1),
 }
 
 

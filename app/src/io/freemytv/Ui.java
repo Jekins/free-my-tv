@@ -115,8 +115,20 @@ final class Ui {
         {"el", "GR"}, {"ja", "JP"}, {"ko", "KR"}, {"hi", "IN"}, {"id", "ID"}, {"vi", "VN"}, {"th", "TH"},
     };
 
+    /**
+     * The name on screen. The code and the catalogues say "Free My TV" (the project's name); every text Ui.tr gives
+     * says this one instead (each such text made once).
+     */
+    static final String NAME = "Jekins TV";
+    private static final String PROJECT = "Free My TV";
+    private static final Map<String, String> NAMED = new ConcurrentHashMap<>();
+
     /** The text for this English key in the current language (the English itself when there is none). */
     static String tr(String english) {
+        return named(lookup(english));
+    }
+
+    private static String lookup(String english) {
         String s = catalogue.get(english);
         if (s != null) return s;
         if (english.indexOf('|') < 0) return english;
@@ -127,6 +139,17 @@ final class Ui {
         }
         s = catalogue.get(plain);
         return s != null ? s : plain;
+    }
+
+    /** `s` with this build's name (also for texts written earlier, kept in a file: notices, errors). */
+    static String named(String s) {
+        if (s.indexOf(PROJECT) < 0) return s;
+        String n = NAMED.get(s);
+        if (n == null) {
+            n = s.replace(PROJECT, NAME);
+            NAMED.put(s, n);
+        }
+        return n;
     }
 
     /** A pattern with named placeholders, filled from name/value pairs: trf("{n} min ago", "n", 12). */
