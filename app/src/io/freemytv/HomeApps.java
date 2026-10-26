@@ -58,6 +58,8 @@ final class HomeApps {
     static final int APP = 0, LIVE_TV = 1, INPUT = 2, ALL_APPS = 3, SETTINGS = 4, ANDROID_SETTINGS = 5, DEVICE = 6;
     /** The "HDMI Inputs" button: opens the bottom drawer on the inputs (the home screen handles it). */
     static final int INPUTS = 7;
+    /** The gear at the top right: the TV's picture settings, as Google TV's own gear; Free My TV's where it has none. */
+    static final int PICTURE = 8;
     /** Image size of each card (16:9; on screen it shows up to ~330 px wide). */
     static final int TILE_W = 384, TILE_H = 216;
 
@@ -258,7 +260,7 @@ final class HomeApps {
         switch (key) {
             case TOP_LIVE: return action(LIVE_TV, TOP_LIVE, Ui.tr("light|Live TV"), "live_tv");
             case TOP_INPUTS: return action(INPUTS, TOP_INPUTS, Ui.tr("HDMI Inputs"), "hdmi");
-            default: return action(SETTINGS, TOP_SETTINGS, Ui.tr("light|Settings"), "settings");
+            default: return action(PICTURE, TOP_SETTINGS, Ui.tr("light|Settings"), "settings");
         }
     }
 
@@ -294,12 +296,12 @@ final class HomeApps {
         return shortcut(kind, key, label, symbol);
     }
 
-    /** Free My TV settings, in the corner of the home screen. */
     /** The TV's own settings (android.settings.SETTINGS). */
     static Item tvSettings() {
         return shortcut(ANDROID_SETTINGS, "tv-settings", Ui.tr("TV Settings"), "tv_settings");
     }
 
+    /** Free My TV settings, in the corner capsule of the home screen. */
     static Item settings() {
         return shortcut(SETTINGS, "settings", Ui.tr("Settings"), "settings");
     }
@@ -558,6 +560,12 @@ final class HomeApps {
                 break;
             case ANDROID_SETTINGS:
                 intent = new Intent(Settings.ACTION_SETTINGS);
+                break;
+            case PICTURE:
+                // The TV's picture settings (a JMGO's picture panel, over the home screen), in a fresh task so Back
+                // comes home; a TV that answers nothing gets Free My TV's settings
+                intent = new Intent(Settings.ACTION_DISPLAY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                plain = new Intent().setComponent(new ComponentName(a, SettingsActivity.class));
                 break;
             case DEVICE:
                 // A fresh task: else Back walks through whatever the maker's settings app had open before

@@ -2564,8 +2564,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case KeyEvent.KEYCODE_SETTINGS:
             case KeyEvent.KEYCODE_NOTIFICATION:
                 // The remote's Settings button (TCL's sends NOTIFICATION) opens TV Settings, as Hisense's gear does by
-                // default; ours stay on the gear on screen. Hisense's gear is a Remote Buttons choice (RemoteKeys); where
-                // the system takes the key first, it never gets here.
+                // default; ours are Home Settings in the drawer. Hisense's gear is a Remote Buttons choice (RemoteKeys);
+                // where the system takes the key first (a JMGO's opens its picture panel), it never gets here.
                 if (RemoteKeys.HISENSE) return false;
                 if (down && e.getRepeatCount() == 0) HomeApps.open(activity, HomeApps.tvSettings(), this, w / 2, h / 2, 1, 1);
                 return true;
@@ -2763,7 +2763,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             r = topRects[topIndex];
         } else if (zone == Z_CARDS) {
             Recs.Pick p = cardIndex < cards.size() ? cards.get(cardIndex) : null;
-            if (p != null && p.pkg == null && searchOpen) {   // an answer Filmix (or the TV's apps) hasn't: its menu still works
+            if (p != null && p.pkg == null) {   // an answer or a watchlist's title Filmix (or the TV's apps) hasn't: its menu works
                 String app = Recs.onlyApp();
                 if (app != null && !recs.away(p)) showToast(Ui.trf("Couldn't open {app}.", "app", app));   // Filmix didn't answer
                 else if (app != null) showToast(Ui.trf("“{title}” isn't on {app}.", "title", p.title, "app", app));
@@ -4299,7 +4299,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         CardText t = cardWords[i];
         if (t == null) t = cardWords[i] = new CardText();
         int fresh = recs.newEpisodes(p);
-        boolean away = searchOpen && recs.away(p);   // a search's answer Filmix (or the TV's apps) hasn't: the card says so
+        boolean away = recs.away(p);   // a search's answer or a watchlist's title Filmix (or the TV's apps) hasn't: the card says so
         String key = Recs.key(p) + '|' + p.title + '|' + p.meta + '|' + p.rating + '|' + fresh + '|' + away;
         if (key.equals(t.key) && t.generation == Ui.generation && t.width == wideW) return;
         t.key = key;
