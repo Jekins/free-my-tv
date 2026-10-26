@@ -190,8 +190,13 @@ bottom left of the wide one.
 Holding OK on a card opens its menu, with the card moved to the row's left end and the menu beside it: *Watch trailer*
 searches YouTube for the title's trailer in the TV's language; *Watched* adds it to your Trakt history, and the item then
 turns into ten stars to rate it (Trakt's own 1 to 10, with Trakt's word for each: 8 is *Great*), sent once, a moment
-after the last press; *Don't recommend* takes it off the row and off your Trakt recommendations (Trakt's hidden list,
-which trakt.tv can undo).
+after the last press; *Add to Watchlist* puts it on your Trakt watchlist (or *Remove from Watchlist* takes it off);
+*Don't recommend* takes it off the row and off your Trakt recommendations (Trakt's hidden list, which trakt.tv can
+undo).
+
+The Watchlist tab, after Shows, has your Trakt watchlist, the latest added first, and before it the shows you watch with
+episodes out since you last watched (the last 20 shows you watched, an episode from the past year): their card says how
+many you haven't seen. It follows Trakt every half hour.
 
 Holding OK on the Movies or Shows tab opens its filters: year (by decade), rating (6, 7 or 8 and up, Trakt's), genre and,
 for shows, status (on the air, coming, ended, canceled), each *All* at first. ← → change a filter; OK or Back applies

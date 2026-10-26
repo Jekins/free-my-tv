@@ -218,6 +218,95 @@ final class Trakt {
         sync("/users/hidden/recommendations", kind, tmdbId, 0);
     }
 
+    /**
+     * Puts the title on the signed-in person's watchlist, or takes it off. A full one (Trakt's limit for free accounts)
+     * answers HTTP 420, which the exception's message says. Network: never on the main thread.
+     */
+    static void watchlist(String kind, int tmdbId, boolean add) throws IOException {
+        sync(add ? "/sync/watchlist" : "/sync/watchlist/remove", kind, tmdbId, 0);
+    }
+
+    /** The signed-in person's watchlist (movies and shows), the latest added first. Throws when Trakt can't be asked. */
+    static List<Item> watchlist() throws IOException {
+        JSONArray array;
+        try {
+            array = getArray("/sync/watchlist?extended=full", true);
+        } catch (org.json.JSONException e) {
+            throw new IOException("Trakt watchlist: " + e.getMessage());
+        }
+        List<JSONObject> entries = new ArrayList<>();
+        for (int i = 0; i < array.length(); i++) if (array.optJSONObject(i) != null) entries.add(array.optJSONObject(i));
+        java.util.Collections.sort(entries, (a, b) -> b.optString("listed_at").compareTo(a.optString("listed_at")));
+        List<Item> items = new ArrayList<>();
+        for (JSONObject o : entries) {
+            Item item = parseItem(o, null);
+            if (item != null && (item.type.equals("movie") || item.type.equals("show"))) items.add(item);   // not seasons, episodes
+        }
+        return items;
+    }
+
+    /** A show the person watches, with `episodes` aired that they haven't seen, the first of them out on `since`. */
+    static final class Unwatched {
+        final Item show;
+        final int episodes;
+        final long since;
+
+        Unwatched(Item show, int episodes, long since) {
+            this.show = show;
+            this.episodes = episodes;
+            this.since = since;
+        }
+    }
+
+    /**
+     * The shows with new episodes for the signed-in person: of the 20 they watched last (within 3 years), the ones whose
+     * next unwatched episode came out after they last watched, within the past year (an older one is a show left behind,
+     * not news). Its progress per show (one request each); the newest first. Throws when Trakt can't be asked.
+     */
+    static List<Unwatched> newEpisodes(long now) throws IOException {
+        JSONArray watched;
+        try {
+            watched = getArray("/sync/watched/shows?extended=noseasons", true);
+        } catch (org.json.JSONException e) {
+            throw new IOException("Trakt watched shows: " + e.getMessage());
+        }
+        List<JSONObject> shows = new ArrayList<>();
+        for (int i = 0; i < watched.length(); i++) if (watched.optJSONObject(i) != null) shows.add(watched.optJSONObject(i));
+        java.util.Collections.sort(shows, (a, b) -> b.optString("last_watched_at").compareTo(a.optString("last_watched_at")));
+        List<Unwatched> out = new ArrayList<>();
+        long year = 365L * 24 * 3600_000L;
+        for (int i = 0; i < Math.min(20, shows.size()); i++) {
+            JSONObject o = shows.get(i);
+            if (now - instant(o.optString("last_watched_at")) > 3 * year) break;
+            Item item = parseItem(o, "show");
+            JSONObject show = o.optJSONObject("show"), ids = show == null ? null : show.optJSONObject("ids");
+            int traktId = ids == null ? 0 : ids.optInt("trakt");
+            if (item == null || traktId <= 0) continue;
+            try {
+                JSONObject p = new JSONObject(get("/shows/" + traktId + "/progress/watched", true));
+                int unseen = p.optInt("aired") - p.optInt("completed");
+                JSONObject next = p.optJSONObject("next_episode");
+                long aired = next == null ? 0 : instant(next.optString("first_aired")), seen = instant(p.optString("last_watched_at"));
+                if (p.optInt("completed") > 0 && unseen > 0 && aired > seen && aired <= now && now - aired < year) {
+                    out.add(new Unwatched(item, unseen, aired));
+                }
+            } catch (IOException | org.json.JSONException e) {
+                AppLog.w("Trakt progress " + traktId + ": " + e.getMessage());
+            }
+        }
+        java.util.Collections.sort(out, (a, b) -> Long.compare(b.since, a.since));
+        return out;
+    }
+
+    /** Trakt's time ("2026-09-04T01:00:00.000Z") in ms; 0 if there is none. */
+    private static long instant(String at) {
+        try {
+            return at == null || at.isEmpty() ? 0 : java.time.Instant.parse(at).toEpochMilli();
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    }
+
     private static void sync(String path, String kind, int tmdbId, int rating) throws IOException {
         String clientId = Config.TRAKT_CLIENT_ID.trim();
         if (clientId.isEmpty() || !hasOAuth()) throw new IOException("not signed in to Trakt");
@@ -233,7 +322,7 @@ final class Trakt {
         int[] status = new int[1];
         JSONObject answer = post(API + path, body, clientId, access(false), status);
         if (status[0] == 401) answer = post(API + path, body, clientId, access(true), status);
-        if (status[0] != 200 && status[0] != 201) throw new IOException("Trakt returned HTTP " + status[0]);
+        if (status[0] != 200 && status[0] != 201) throw new IOException("Trakt returned HTTP " + status[0]);   // 420: a limit
         JSONObject missing = answer.optJSONObject("not_found");
         JSONArray lost = missing == null ? null : missing.optJSONArray(list);
         if (lost != null && lost.length() > 0) throw new IOException("Trakt doesn't know " + kind + " " + tmdbId);
