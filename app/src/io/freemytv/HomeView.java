@@ -817,6 +817,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         menuHint = Ui.text(Ui.medium, 26 * k, L_INK);
         menuTitle = Ui.text(Ui.semibold, 34 * k, L_INK);
         menuValue = Ui.text(Ui.semibold, 30 * k, L_INK);
+        if (filterPanel == null) {
+            filterPanel = new FilterPanel(getContext(), new FilterPanel.Host() {
+                @Override public void dirty() {
+                    menuDirty = true;
+                    wake();
+                }
+                @Override public void moved() { click.move(); }
+                @Override public void picked() { click.open(); }
+                @Override public void announce(String text) { announceForAccessibility(text); }
+                @Override public void close() { closePickMenu(false); }
+            }, shadows);
+        }
+        filterPanel.setScale(k);
         lEmpty = Ui.text(Ui.medium, 30 * k, L_DIM);
         lEmpty.setTextAlign(Paint.Align.CENTER);
         lBadge = Ui.text(Ui.semibold, 21 * k, L_INK);
@@ -922,7 +935,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // this TV ~50 ms a frame); only the items are redrawn, while their focus moves. Meanwhile a still copy of the
         // screen stands in for the home screen's layers, which aren't drawn: composing them all under the fading menu
         // cost ~50 ms of GPU a frame, the copy and the menu alone ~17.
-        boolean itemsMoving = step(menuFocus, dt) | step(starFocus, dt), menuMoving = menu.step(dt) | itemsMoving;
+        boolean itemsMoving = step(menuFocus, dt) | step(starFocus, dt) | (filterPanel != null && filterPanel.step(dt));
+        boolean menuMoving = menu.step(dt) | itemsMoving;
         if (itemsMoving || menuDirty) menuItemsLayer.invalidate();
         if (menuBackDirty) {
             menuSharpLayer.invalidate();
@@ -2873,20 +2887,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final long RATE_AFTER_MS = 1200;
     private static final String YOUTUBE = "com.google.android.youtube.tv";
     private final Spring menu = new Spring(0.34f, 0.86f, 0);
-    private final Spring[] menuFocus = new Spring[6];   // a pick's four items, or the filters' five rows and Reset
+    private final Spring[] menuFocus = new Spring[4];   // a pick's four items
     private final Spring[] starFocus = new Spring[10];   // Trakt's own 1 to 10 (five stars with halves)
     /** While the menu is open, its card goes to the row's left end and the menu takes its right: the row's shift. */
     private final Spring menuShift = new Spring(0.16f, 1, 0);
     private boolean menuWaitsRow;   // the screen is copied, and the menu shown, once the row stops there
     private Recs.Pick hideAfter;    // "Don't recommend": it leaves the row once the menu has faded
     private Recs.Pick unlistAfter;  // off the watchlist from the Watchlist tab: it leaves that row once the menu has faded
-    // The same menu as Explore's filters (OK held on its tab): centered, nothing moves behind it. Its rows change
-    // `filterDraft` (indexes into Recs.Filter's lists: type, year, rating, genre, and the status with shows only), which
-    // the row takes as the menu closes.
-    private static final int F_TYPE = 0, F_YEAR = 1, F_RATING = 2, F_GENRE = 3, F_STATUS = 4;
-    private static final float FILTER_W = 820, FILTER_HEAD = 92;
+    // The same menu as Explore's filters (OK held on its tab): FilterPanel's panel in the middle of the screen, nothing
+    // moving behind it; the row takes its filters as it closes.
     private boolean menuFilters;
-    private final int[] filterDraft = new int[5];
+    private FilterPanel filterPanel;
     private boolean menuOpen, menuDirty, menuBackDirty, menuRight, menuCovers, menuSignedIn;   // signed in to Trakt: read once as it opens (a file)
     private Recs.Pick menuPick;
     private int menuCard, menuIndex, starIndex, menuShotId, menuWarm;
@@ -2913,7 +2924,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private int menuItems() {
-        if (menuFilters) return filterDraft[F_TYPE] == Recs.Filter.SHOWS ? 6 : 5;   // the rows (Status with shows), Reset
         return menuCount;
     }
 
@@ -2983,12 +2993,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         menuOpen = menuFilters = true;
         menuPick = null;
-        Recs.Filter f = recs.filter(null);
-        filterDraft[F_TYPE] = f.type;
-        filterDraft[F_YEAR] = f.year;
-        filterDraft[F_RATING] = f.rating;
-        filterDraft[F_GENRE] = f.genre;
-        filterDraft[F_STATUS] = f.status;
+        filterPanel.open(recs.filter(null), new String[] {Ui.tr("filter|All"), tabs()[1], tabs()[2]}, tabs()[0]);
         menuIndex = 0;
         aimMenu(true);
         menuShot = menuSharp = null;
@@ -3003,8 +3008,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** As the filters close: Explore takes them, if they changed (Recs asks Trakt for its titles again). */
     private void applyFilters() {
-        Recs.Filter f = new Recs.Filter(filterDraft[F_TYPE], filterDraft[F_YEAR], filterDraft[F_RATING],
-                filterDraft[F_GENRE], filterDraft[F_STATUS]);
+        Recs.Filter f = filterPanel.draft();
         if (f.equals(recs.filter(null))) return;
         if (TAB_KIND[tab] == null) {
             cardIndex = 0;
@@ -3012,156 +3016,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         recs.setFilter(null, f, () -> showToast(Ui.tr("Trakt didn't answer. Try again in a moment.")));
         heroDirty = true;
-    }
-
-    /** The options a filter row cycles through (the first one: all). */
-    private static int filterOptions(int field) {
-        switch (field) {
-            case F_TYPE: return Recs.Filter.TYPES.length;
-            case F_YEAR: return Recs.Filter.YEARS.length;
-            case F_RATING: return Recs.Filter.RATINGS.length;
-            case F_GENRE: return Recs.Filter.GENRES.length;
-            default: return Recs.Filter.STATUSES.length;
-        }
-    }
-
-    private static String filterName(int field) {
-        switch (field) {
-            case F_TYPE: return Ui.tr("filter|Type");
-            case F_YEAR: return Ui.tr("filter|Year");
-            case F_RATING: return Ui.tr("filter|Rating");
-            case F_GENRE: return Ui.tr("filter|Genre");
-            default: return Ui.tr("filter|Status");
-        }
-    }
-
-    private static String filterValue(int field, int i) {
-        if (i == 0) return Ui.tr("filter|All");
-        switch (field) {
-            case F_TYPE: return tabs()[i];   // Movies, Shows: as their tabs say
-            case F_YEAR:
-                int from = Recs.Filter.YEARS[i];
-                return from == 1900 ? Ui.trf("filter|Before {year}", "year", "1990") : Ui.trf("filter|{year}s", "year", String.valueOf(from));
-            case F_RATING: return Ui.trf("filter|{n}+", "n", Recs.Filter.RATINGS[i]);
-            case F_GENRE: return genreName(Recs.Filter.GENRES[i]);
-            default:
-                switch (i) {
-                    case 1: return Ui.tr("status|Returning");
-                    case 2: return Ui.tr("status|Upcoming");
-                    case 3: return Ui.tr("status|Ended");
-                    default: return Ui.tr("status|Canceled");
-                }
-        }
-    }
-
-    /** Trakt's genres (Recs.Filter.GENRES) in the TV's language. */
-    private static String genreName(String slug) {
-        switch (slug) {
-            case "action": return Ui.tr("genre|Action");
-            case "adventure": return Ui.tr("genre|Adventure");
-            case "animation": return Ui.tr("genre|Animation");
-            case "comedy": return Ui.tr("genre|Comedy");
-            case "crime": return Ui.tr("genre|Crime");
-            case "documentary": return Ui.tr("genre|Documentary");
-            case "drama": return Ui.tr("genre|Drama");
-            case "family": return Ui.tr("genre|Family");
-            case "fantasy": return Ui.tr("genre|Fantasy");
-            case "history": return Ui.tr("genre|History");
-            case "horror": return Ui.tr("genre|Horror");
-            case "mystery": return Ui.tr("genre|Mystery");
-            case "romance": return Ui.tr("genre|Romance");
-            case "science-fiction": return Ui.tr("genre|Science Fiction");
-            case "thriller": return Ui.tr("genre|Thriller");
-            case "war": return Ui.tr("genre|War");
-            default: return Ui.tr("genre|Western");
-        }
-    }
-
-    private boolean filtersDrafted() {
-        return filterDraft[F_TYPE] != 0 || filterDraft[F_YEAR] != 0 || filterDraft[F_RATING] != 0 || filterDraft[F_GENRE] != 0
-                || (filterDraft[F_TYPE] == Recs.Filter.SHOWS && filterDraft[F_STATUS] != 0);
-    }
-
-    /** Status comes and goes with Shows: the panel takes its new height, and the focus on Reset stays on it. */
-    private void filterRowsChanged(int before) {
-        int n = menuItems();
-        if (n == before) return;
-        if (menuIndex >= before - 1) menuIndex = n - 1;
-        placeFilters();
-        menuBackDirty = true;   // the glass, at its new height
-        aimMenu(false);
-    }
-
-    /**
-     * Keys while the filters are open: ↑ ↓ between the rows, ← → through a row's options (they stop at the ends), OK on
-     * Reset sets them all back to All and anywhere else closes; Back closes too. Closing applies them.
-     */
-    private boolean filterKey(KeyEvent e, boolean down) {
-        int n = menuItems();
-        switch (e.getKeyCode()) {
-            case KeyEvent.KEYCODE_DPAD_UP:
-            case KeyEvent.KEYCODE_DPAD_DOWN:
-                if (down) {
-                    int next = Math.max(0, Math.min(n - 1, menuIndex + (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1)));
-                    if (next != menuIndex) {
-                        menuIndex = next;
-                        aimMenu(false);
-                        click.move();
-                        announceForAccessibility(menuLabel(menuIndex));
-                    }
-                }
-                return true;
-            case KeyEvent.KEYCODE_DPAD_LEFT:
-            case KeyEvent.KEYCODE_DPAD_RIGHT:
-                if (down && menuIndex < n - 1) {
-                    int field = menuIndex, dx = e.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
-                    int next = Math.max(0, Math.min(filterOptions(field) - 1, filterDraft[field] + dx));
-                    if (next != filterDraft[field]) {
-                        filterDraft[field] = next;
-                        filterRowsChanged(n);
-                        menuDirty = true;
-                        click.move();
-                        announceForAccessibility(menuLabel(menuIndex));
-                    }
-                }
-                return true;
-            case KeyEvent.KEYCODE_DPAD_CENTER:
-            case KeyEvent.KEYCODE_ENTER:
-            case KeyEvent.KEYCODE_NUMPAD_ENTER:
-                if (down) {
-                    if (e.getRepeatCount() == 0) {
-                        okDown = true;
-                        okHeld = false;
-                    }
-                } else {
-                    if (okDown && !okHeld && !e.isCanceled()) {
-                        click.open();
-                        if (menuIndex == n - 1) {
-                            java.util.Arrays.fill(filterDraft, 0);
-                            filterRowsChanged(n);
-                            menuDirty = true;
-                            announceForAccessibility(Ui.tr("filter|All"));
-                        } else {
-                            closePickMenu(false);
-                        }
-                    }
-                    okDown = okHeld = false;
-                }
-                return true;
-            case KeyEvent.KEYCODE_BACK:
-                if (down) {
-                    if (e.getRepeatCount() == 0) backDown = true;
-                } else {
-                    if (backDown && !e.isCanceled()) {
-                        closePickMenu(false);
-                        click.move();
-                    }
-                    backDown = false;
-                }
-                return true;
-            default:
-                return false;
-        }
     }
 
     /**
@@ -3271,10 +3125,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private String menuLabel(int i) {
-        if (menuFilters) {
-            if (i == menuItems() - 1) return Ui.tr("Reset filters");
-            return Ui.trf("filter|{name}: {value}", "name", filterName(i), "value", filterValue(i, filterDraft[i]));
-        }
+        if (menuFilters) return filterPanel.label();
         int item = menuItem(i);
         if (item == M_TRAILER) return Ui.tr("Watch trailer");
         if (item == M_HIDE) return Ui.tr("Don't recommend");
@@ -3286,7 +3137,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Keys while the menu is open: ↑ ↓ between its items, ← → along the stars, OK, and Back closes it. */
     private boolean menuKey(KeyEvent e, boolean down) {
-        if (menuFilters) return filterKey(e, down);
+        if (menuFilters) return filterPanel.key(e, down);
         switch (e.getKeyCode()) {
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_DPAD_DOWN:
@@ -3549,12 +3400,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
-    /** The filters: in the middle of the screen, a heading over their rows; they grow from their center. */
+    /** The filters: FilterPanel's panel, in the middle of the screen; it grows from its center. */
     private void placeFilters() {
-        int items = menuItems();
-        float pw = FILTER_W * k, ph = FILTER_HEAD * k + items * MENU_ITEM_H * k + (items - 1) * MENU_GAP * k + 2 * MENU_PAD * k;
-        menuRect.set((w - pw) / 2, (h - ph) / 2, (w + pw) / 2, (h + ph) / 2);
-        snap(menuRect);
+        menuRect.set(filterPanel.place(w, h));
         int m = Math.round(60 * k);
         menuBounds.set(Math.round(menuRect.left) - m, Math.round(menuRect.top) - m, Math.round(menuRect.right) + m,
                 Math.round(menuRect.bottom) + 2 * m);
@@ -3584,7 +3432,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * faint tint, bending it near the rim and catching the light there; a soft shadow under it.
      */
     private void drawMenuGlass(Canvas c) {
-        float radius = (MENU_ITEM_H / 2 + MENU_PAD) * k;
+        float radius = (menuFilters ? FilterPanel.RADIUS : MENU_ITEM_H / 2 + MENU_PAD) * k;
         tmp.set(menuRect);
         tmp.offset(0, 18 * k);
         shadow.setColor(tone(0x14000000, 0x40000000));
@@ -3597,7 +3445,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** The items, focused the tvOS way (a white pill); the second one, once watched, ten stars. */
     private void drawMenuItems(Canvas c) {
         if (menuFilters) {
-            drawFilterItems(c);
+            filterPanel.draw(c, dark());
             return;
         }
         if (menuPick == null) return;
@@ -3626,47 +3474,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 menuText.setColor(ink);
                 c.drawText(menuLabel(i), textX, cy + Ui.halfCap(menuText), menuText);
             }
-        }
-    }
-
-    /**
-     * The filters: the heading, then a row per filter, its name on the left and its value on the right between ‹ and ›
-     * (faint at the ends); the last row sets them all back to All.
-     */
-    private void drawFilterItems(Canvas c) {
-        float ih = MENU_ITEM_H * k, pad = MENU_PAD * k, gap = MENU_GAP * k, inset = 30 * k;
-        int n = menuItems();
-        menuTitle.setColor(tone(L_INK, WHITE));
-        String heading = Ui.trf("Filters: {tab}", "tab", tabs()[0]);
-        c.drawText(heading, menuRect.left + pad + inset, menuRect.top + pad + FILTER_HEAD * k * 0.6f, menuTitle);
-        for (int i = 0; i < n; i++) {
-            float f = Ui.clamp(menuFocus[i].value), y = menuRect.top + pad + FILTER_HEAD * k + i * (ih + gap);
-            cell.set(menuRect.left + pad, y, menuRect.right - pad, y + ih);
-            if (f > 0.01f) {
-                tmp.set(cell);
-                tmp.offset(0, 6 * k * f);
-                shadow.setColor(Ui.alpha(0xFF000000, tone(0.12f, 0.3f) * f));
-                shadows.draw(c, tmp, ih / 2, SHADOW_BLUR * k, shadow);
-                fill.setShader(null);
-                fill.setColor(Ui.alpha(0xFFFFFFFF, f));
-                c.drawRoundRect(cell, ih / 2, ih / 2, fill);
-            }
-            int ink = blend(tone(L_INK, WHITE), L_INK, f), faint = Ui.alpha(ink, 0.3f);
-            float cy = cell.centerY();
-            if (i == n - 1) {
-                menuText.setColor(filtersDrafted() ? ink : Ui.alpha(ink, 0.45f));
-                c.drawText(Ui.tr("Reset filters"), cell.left + inset, cy + Ui.halfCap(menuText), menuText);
-                continue;
-            }
-            menuText.setColor(ink);
-            c.drawText(filterName(i), cell.left + inset, cy + Ui.halfCap(menuText), menuText);
-            int at = filterDraft[i], last = filterOptions(i) - 1;
-            String value = filterValue(i, at);
-            float size = 30 * k, right = cell.right - inset, vw = menuValue.measureText(value);
-            Symbols.draw(getContext(), c, "chevron_right", right - size / 2, cy, size, at < last ? ink : faint);
-            menuValue.setColor(ink);
-            c.drawText(value, right - size - 8 * k - vw, cy + Ui.halfCap(menuValue), menuValue);
-            Symbols.draw(getContext(), c, "chevron_left", right - size - 16 * k - vw - size / 2, cy, size, at > 0 ? ink : faint);
         }
     }
 
