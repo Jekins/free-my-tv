@@ -31,13 +31,17 @@ final class Trakt {
         final int year;
         final int tmdbId;
         final int traktId;
+        final float rating;     // Trakt's average (0 to 10)
+        final int votes;
 
-        Item(String type, String title, int year, int tmdbId, int traktId) {
+        Item(String type, String title, int year, int tmdbId, int traktId, float rating, int votes) {
             this.type = type;
             this.title = title;
             this.year = year;
             this.tmdbId = tmdbId;
             this.traktId = traktId;
+            this.rating = rating;
+            this.votes = votes;
         }
     }
 
@@ -250,16 +254,30 @@ final class Trakt {
      * {@code kind} is {@code "movies"} or {@code "shows"}.
      */
     static List<Item> fetchRecommendations(String kind) throws IOException {
+        if (!hasOAuth()) return new ArrayList<>();
+        try {
+            return recommendations(kind, "", 50);
+        } catch (Exception e) {
+            AppLog.w("Trakt fetchRecommendations failed for " + kind + ": " + e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    /**
+     * Up to `limit` recommendations, with Trakt's filters in `query` ("&genres=horror&years=2010-2019": Trakt applies them
+     * before the limit, so a filter reaches past the unfiltered list's end); each with its rating (extended=full).
+     * Throws when Trakt can't be asked.
+     */
+    static List<Item> recommendations(String kind, String query, int limit) throws IOException {
         List<Item> items = new ArrayList<>();
-        if (!hasOAuth()) return items;
         String type = "shows".equals(kind) ? "show" : "movie";
-        String path = "/recommendations/" + kind + "?limit=50&ignore_collected=true&ignore_watchlisted=true";
+        String path = "/recommendations/" + kind + "?limit=" + limit + "&ignore_collected=true&ignore_watchlisted=true"
+                + "&extended=full" + query;
         JSONArray array;
         try {
             array = getArray(path, true);
-        } catch (Exception e) {
-            AppLog.w("Trakt fetchRecommendations failed for " + kind + ": " + e.getMessage());
-            return items;
+        } catch (org.json.JSONException e) {
+            throw new IOException("Trakt recommendations: " + e.getMessage());
         }
         for (int i = 0; i < array.length(); i++) {
             Item item = parseItem(array.optJSONObject(i), type);   // bare movie/show objects, no wrapper
@@ -278,7 +296,7 @@ final class Trakt {
             return items;
         }
         String path = "/users/" + URLEncoder.encode(user.trim(), "UTF-8")
-                + "/lists/" + URLEncoder.encode(listSlug.trim(), "UTF-8") + "/items";
+                + "/lists/" + URLEncoder.encode(listSlug.trim(), "UTF-8") + "/items?extended=full";
         JSONArray array;
         try {
             array = getArray(path, false);
@@ -316,7 +334,7 @@ final class Trakt {
         int tmdbId = ids != null ? ids.optInt("tmdb") : 0;
         int traktId = ids != null ? ids.optInt("trakt") : 0;
         if (tmdbId <= 0 || title.isEmpty()) return null;
-        return new Item(type, title, year, tmdbId, traktId);
+        return new Item(type, title, year, tmdbId, traktId, (float) media.optDouble("rating", 0), media.optInt("votes"));
     }
 
     private static JSONArray getArray(String path, boolean oauth) throws IOException, org.json.JSONException {

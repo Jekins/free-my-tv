@@ -52,9 +52,9 @@ import java.util.function.Consumer;
 
 /**
  * The home screen, styled after the Apple TV app with the macOS 27 glass:
- *  - at the top left, the "For You" title and the tabs (Explore, Movies, Shows); at the top right, icon-only glass
- *    buttons (Live TV, HDMI Inputs, Settings), with the focused one's name below it, and the small crypto quotes
- *    (logo + price) at the right end of the tab row;
+ *  - at the top left, the tabs (Explore, Movies, Shows); on their line at the top right, icon-only glass buttons
+ *    (Live TV, HDMI Inputs, Settings), with the focused one's name below it, and before them the small crypto quotes
+ *    (logo + price);
  *  - three cards with the titles recommended for right now in the selected tab (Recs, from TMDB); the background is
  *    the first card's photo, heavily blurred and almost white (Backdrop); without picks, one of your own photos
  *    (Photos) the same way, or else a light gradient;
@@ -99,9 +99,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final int Z_STATUS = 0, Z_HERO = 1, Z_SHELF = 2, Z_DRAWER = 3;
     private static final ExecutorService LOADER = Executors.newSingleThreadExecutor();
     private static final ExecutorService SHOTS = Executors.newSingleThreadExecutor();   // the menu's copy of the screen
-    // Light design (the L_ constants): title, tab bar, three recommendation cards and the shelf.
-    // The tab bar is a 68 px capsule; the cards sit on the 5-column grid (the wide one spans 3).
-    private static final float L_TITLE_BASE = 130, L_TABBAR_TOP = 158, L_TABBAR_H = 68, L_CARDS_TOP = 262, L_CARD_H = 442;
+    // Light design (the L_ constants): tab bar, recommendation cards and the shelf.
+    // The tabs' focus is a 68 px capsule, on the round buttons' line (as on tvOS, the tab bar at the top), and so are the
+    // quotes, ending before the buttons; the cards sit on the 5-column grid (the wide one spans 3), as tall as the room
+    // under that line allows (504: the focused one stays 42 px clear of the tabs, a button's name 13 px of the cards).
+    private static final float L_TABBAR_TOP = 69, L_TABBAR_H = 68, L_CARDS_TOP = 200, L_CARD_H = 504;
     private static final float L_TALL_W = 320, L_CARD_GAP = 40, L_BUTTON = 68, L_BUTTON_GAP = 20, L_BUTTON_CY = 103;
     private static final float L_PLATTER_TOP = 814, L_TILE_H = 126;
     // The photo of the day's caption: on the buttons' line, ending before them, on a dark chip. Measured on 15 of
@@ -159,7 +161,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Spring[] topFocus = new Spring[3 + HomeApps.MAX_TOP];
     private final RectF[] topRects = new RectF[3 + HomeApps.MAX_TOP];
     // The row of picks, as on Apple TV: the focused card is wide and the others tall, each width a spring, and the row
-    // scrolls only when the wide card wouldn't fit. → past the last card asks Recs for more; empty cards (slots) hold
+    // scrolls only when the wide card wouldn't fit. The focus on the last card asks Recs for more; empty cards (slots) hold
     // their places, softly pulsing, until their titles are confirmed. The focused card stretches past its size once and
     // comes back softly (a spring with its own `back`), a little thinner meanwhile. The next card stays put until only
     // their final gap is left between them; from there it moves with the stretch and comes back with it, squeezing the
@@ -175,11 +177,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private float[] cardX = new float[0], cardW = new float[0];   // where each slot is drawn this frame
     private long[] imageAt = new long[0];     // when each card's photo arrived (0 = not yet): it fades in
     private long fadingUntil;
-    private static final long IMAGE_FADE_MS = 260, FOCUS_REST_MS = 250, BG_FADE_MS = 600;
+    private static final long IMAGE_FADE_MS = 260, BG_FADE_MS = 600;
     private final Path star = new Path();   // the rating's star, 1 unit across, drawn scaled
     private final Runnable focusBackground = this::backgroundFromFocus;
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
-    private Paint lTitle, lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip, lDate, lClock, lWeather, lClockQuote;
+    private Paint lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip, lDate, lClock, lWeather, lClockQuote;
     private TextPaint lCaption;
     private Shader lightGradient;
 
@@ -267,14 +269,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     // Frames
     private boolean running, tilesDirty, statusDirty, heroDirty, drawerDirty, gridDirty, motionDirty = true;
-    private boolean drawerWasMoving, idle;
+    private boolean idle;
     private long lastNanos, resumedAt, lastStep;
     private static final long BURST_MS = 1500;
     private int w, h;
     private float k = 1;
     private String clockText = "", dateText = "", weatherLine = "";
     /** "Off in 42 min" next to the round buttons while the sleep timer runs (Settings > Sleep Timer); "" otherwise. */
-    private String sleepText = "";
+    private String sleepText = "", sleepMeasured = "";
+    private float sleepWidth;
     private long weatherLineAt = -1;
     private int weatherLinePrefs = -1;
     private String weatherLineLanguage = "";
@@ -469,6 +472,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         checkNight(false);
         sheetLayer.setVisibility(INVISIBLE);
         for (View v : new View[] {menuSharpLayer, menuLayer, menuGlass, menuItemsLayer}) v.setVisibility(INVISIBLE);
+        for (int i = 0; i < menuFocus.length; i++) menuFocus[i] = new Spring(0.26f, 0.85f, 0);
         for (int i = 0; i < starFocus.length; i++) starFocus[i] = new Spring(0.26f, 0.8f, 0);
         scene.setMotion(0.6f, 0f);
         updatePalette();
@@ -575,7 +579,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (tab != 0) selectTab(0);
         cardIndex = 0;      // Home: the row slides back to its first card, and the background follows it
         handler.removeCallbacks(focusBackground);
-        handler.postDelayed(focusBackground, FOCUS_REST_MS);
+        handler.post(focusBackground);
         retarget(!animated);
         motionDirty = true;
     }
@@ -714,7 +718,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         updateClock();
         Symbols.warm(getContext(), "bell", 26 * k);
         Symbols.warm(getContext(), "bedtime", 21 * k);   // the sleep timer's "Off in", at lQuote's size
-        for (String s : new String[] {"play", "check", "thumb_down"}) Symbols.warm(getContext(), s, 30 * k);   // a pick's menu
+        for (String s : new String[] {"play", "check", "hide", "chevron_left", "chevron_right"}) {
+            Symbols.warm(getContext(), s, 30 * k);   // a pick's menu, the filters
+        }
         layoutShelf();
         layoutStatus();
         layoutDrawer();
@@ -736,8 +742,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         clockPaint = Ui.numbers(Ui.thin, 176 * k, 0xFFFFFFFF);
         clockPaint.setLetterSpacing(-0.01f);
         for (Paint p : new Paint[] {labelPaint, titlePaint, metaPaint, clockPaint}) p.setShadowLayer(22 * k, 0, 2 * k, 0x59000000);
-        lTitle = Ui.text(Ui.displaySemibold, 76 * k, L_INK);
-        lTitle.setLetterSpacing(0.004f);
         lTab = Ui.text(Ui.medium, 30 * k, L_DIM);
         lTabOn = Ui.text(Ui.semibold, 30 * k, L_INK);
         lCardTitle = Ui.text(Ui.semibold, 31 * k, L_INK);
@@ -749,6 +753,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         starLine.setStrokeJoin(Paint.Join.ROUND);
         starLine.setPathEffect(new android.graphics.CornerPathEffect(0.08f));
         menuText = Ui.text(Ui.medium, 30 * k, L_INK);
+        menuHint = Ui.text(Ui.medium, 26 * k, L_INK);
+        menuTitle = Ui.text(Ui.semibold, 34 * k, L_INK);
+        menuValue = Ui.text(Ui.semibold, 30 * k, L_INK);
+        lEmpty = Ui.text(Ui.medium, 30 * k, L_DIM);
+        lEmpty.setTextAlign(Paint.Align.CENTER);
         lQuote = Ui.numbers(Ui.regular, 21 * k, L_FAINT);
         lTip = Ui.text(Ui.semibold, 25 * k, L_INK);
         lTip.setTextAlign(Paint.Align.CENTER);
@@ -826,10 +835,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         // The row: lift, widths, scroll, its shift for the menu and the bump at its end; empty cards pulse while their
         // titles load.
+        float shiftShown = menuShift.value;
         boolean cardsMoving = step(cardFocus, dt) | step(cardWide, dt) | rowScroll.step(dt) | rowNudge.step(dt)
                 | menuShift.step(dt) | slots > cards.size() | up < fadingUntil;
-        if (menuWaitsRow && Math.abs(menuShift.value - menuShift.target) < 0.5f && Math.abs(menuShift.velocity) < 30 * k) {
-            menuWaitsRow = false;   // the frame on screen now has the card where the menu needs it
+        if (menuWaitsRow && Math.abs(shiftShown - menuShift.target) < 3 * k) {
+            // A few px short of its place (a critically damped spring takes another ~0.1 s to cover them), the row stops
+            // where the frame on screen has it, and that frame is copied for the menu.
+            menuWaitsRow = false;
+            menuShift.snap(shiftShown);
             placeMenu();
             captureBehind(++menuShotId);
         }
@@ -876,28 +889,25 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean toastFading = tickToast(up);
         boolean heroFading = tickHeroFade(up);
         boolean bgFading = tickBackgroundFade(up);
-        // The glass follows the background on every fourth frame (it changes slowly), the shelf's and the buttons' on
-        // different frames: redrawing both on every frame of the fade took this TV from 51 to 47 frames a second.
-        int glassStep = bgFading ? (bgFadeAt == 0 ? 3 : ++bgFrames % 4) : -1;
-        boolean shelfGlass = glassStep == 0 || glassStep == 3, buttonsGlass = glassStep == 2 || glassStep == 3;
+        // The shelf's and the buttons' glass is clear: the background fades under it. The open drawer's glass shows a copy
+        // of the background, so it follows on every fourth frame (it changes slowly; the last frame of the fade too):
+        // redrawing the glass during the fade cost this TV 57 frames a second instead of 59.
+        boolean drawerGlass = bgFading && (bgFadeAt == 0 || ++bgFrames % 4 == 0);
         boolean nightMoving = tickNight(up);
 
         if (drawerMoving || sheetMoving || motionDirty) updateMotion();
         // Opening and closing the drawer only moves the cached layers: redrawing the glass on every frame made the TV
         // drop frames (measured: ~50 ms of GPU per frame). The app tiles have no glass; the top buttons fade out as
-        // they rise; the drawer is drawn resting in place; the glass shelf is redrawn once the drawer stops, so the
-        // glass shows the background where it ended up.
+        // they rise; the drawer is drawn resting in place; the shelf's glass is clear (nothing to redraw as it moves).
         if (tilesMoving || tilesDirty) tiles.invalidate();
-        if (statusMoving || statusDirty || buttonsGlass) status.invalidate();
+        if (statusMoving || statusDirty) status.invalidate();
         if (heroMoving || heroDirty || heroFading) heroLayer.invalidate();
-        if (drawerItemsMoving || drawerDirty || buttonsGlass) drawerLayer.invalidate();
+        if (drawerItemsMoving || drawerDirty || drawerGlass) drawerLayer.invalidate();
         if (gridMoving || gridDirty) sheetLayer.invalidate();
         if (drawerMoving || bgFading) {
             sky.invalidate();
             skyImages.invalidate();
         }
-        if (shelfGlass || (drawerWasMoving && !drawerMoving)) platter.invalidate();
-        drawerWasMoving = drawerMoving;
         tilesDirty = statusDirty = heroDirty = drawerDirty = gridDirty = motionDirty = false;
         if (updateClock()) {
             layoutStatus();
@@ -976,7 +986,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         String text = left == 0 ? "" : Ui.trf("Off in {time}", "time", SleepTimer.duration(left));
         if (text.equals(sleepText)) return;
         sleepText = text;
-        statusDirty = true;
+        statusDirty = heroDirty = true;   // the quotes end before it
     }
 
     private boolean updateClock() {
@@ -1227,8 +1237,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Text colors for the current night value (dark by day, white at night). */
     private void applyTone() {
-        lTitle.setColor(tone(L_INK, WHITE));
         lTab.setColor(tone(L_DIM, 0xFF8E8E93));
+        lEmpty.setColor(tone(L_DIM, 0xFF8E8E93));
         lTabOn.setColor(tone(L_INK, WHITE));
         lCardTitle.setColor(tone(L_INK, WHITE));
         lCardMeta.setColor(tone(L_DIM, 0xFF98989D));
@@ -1468,9 +1478,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.offset(0, 18 * k);
         shadow.setColor(tone(0x1F000000, 0x52000000));
         shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
-        // White glass by day; smoked glass at night.
-        scene.liquid(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.42f, 0.12f), tone(0.03f, 0.08f),
-                tone(30, 34) * k, tone(22, 28) * k, tone(0.65f, 0.95f), 1);
+        // White glass by day, smoked at night; clear, so the background changing under it doesn't redraw it.
+        scene.clear(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.42f, 0.12f), tone(0.03f, 0.08f), tone(0.65f, 0.95f), 1);
     }
 
     /** The quotes row's text and sizes, for one set of coins, prices and text size. */
@@ -1546,54 +1555,51 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         playingClock = TextUtils.ellipsize(now, fitPaint, (CONTENT_R - MARGIN - 60) * k, TextUtils.TruncateAt.END).toString();
     }
 
-    /** Coin logo + price in the configured currency, in a row at the right end of the tab bar. */
+    /** Coin logo + price in the configured currency, in a row on the round buttons' line, ending before them. */
     private void drawQuotes(Canvas c) {
         boolean clock = !picksOn();
-        // At the right margin, under the round buttons: the shelf's glass is narrower and centred with few apps.
-        float right = CONTENT_R * k;
+        // Before the round buttons and the sleep timer's "Off in" (measured once per text: this row is redrawn on every
+        // frame of the cards' focus animation).
+        if (!sleepText.equals(sleepMeasured)) {
+            sleepMeasured = sleepText;
+            sleepWidth = sleepText.isEmpty() ? 0 : lQuote.measureText(sleepText) + lQuote.getTextSize() * 1.4f + 28 * k;
+        }
+        float right = (lightButtons.isEmpty() ? CONTENT_R * k : topRects[3].left - 28 * k) - sleepWidth;
         applyTone();
         Paint text = clock ? lClockQuote : lQuote;
-        // The corner buttons' names appear in this row: the quotes fade out while one of them has focus.
-        float fade = 1;
-        for (int i = 3; i < 3 + lightButtons.size() && !clock; i++) fade = Math.min(fade, 1 - Ui.clamp(topFocus[i].value));
-        if (fade <= 0.01f) return;
-        int textColor = text.getColor();
-        text.setColor(Ui.alpha(textColor, fade));
         // What an app is playing takes the quotes' place while it plays.
         String line = clock ? playingClock : playingTab;
         if (line != null) {
             float cap = clock ? playingClockCap : playingTabCap, gap = cap * 0.6f;
-            float base = clock ? L_QUOTES_BASE * k : (L_TABBAR_TOP + L_TABBAR_H / 2) * k + cap / 2;
+            float base = clock ? L_QUOTES_BASE * k : L_BUTTON_CY * k + cap / 2;
             float x = clock ? MARGIN * k : right - playingTabWidth - gap - NowPlaying.barsWidth(cap);
             NowPlaying.drawBars(c, x, base, cap, text, SystemClock.uptimeMillis() < barsUntil, barRect);
             c.drawText(line, x + NowPlaying.barsWidth(cap) + gap, base, text);
-            text.setColor(textColor);
             return;
         }
         // One read of the list, so n always matches the coins drawn below.
         int[] coins = HomeData.active();
         int n = coins.length;
-        if (n == 0) { text.setColor(textColor); return; }
+        if (n == 0) return;
         // Measured once per set of prices: this row is redrawn on every frame of the cards' focus animation, and
         // measuring text there cost ~3 ms a frame on a Mi Box 3.
         Quotes q = quotes;
         if (q == null || !q.matches(coins, data.prices, text.getTextSize())) {
             q = quotes = new Quotes(coins, data.prices, text);
         }
-        // On the tab row, at the right.
-        float base = clock ? L_QUOTES_BASE * k : (L_TABBAR_TOP + L_TABBAR_H / 2) * k + q.halfCap;
+        // On the round buttons' line, before them.
+        float base = clock ? L_QUOTES_BASE * k : L_BUTTON_CY * k + q.halfCap;
         float cap = q.cap, gap = (clock ? 8 : 6) * k, spacing = (clock ? 32 : 24) * k;
         float total = spacing * (n - 1);
         for (int i = 0; i < n; i++) total += q.glyphs[i] + gap + q.widths[i];
         float x = clock ? MARGIN * k : right - total;
-        int coinColor = clock ? text.getColor() : Ui.alpha(tone(0xB38E8E93, 0x8CFFFFFF), fade);
+        int coinColor = clock ? text.getColor() : tone(0xB38E8E93, 0x8CFFFFFF);
         for (int i = 0; i < n; i++) {
             Glyphs.coin(getContext(), c, HomeData.COINS[coins[i]], x + q.glyphs[i] / 2, base - cap / 2, cap, coinColor);
             x += q.glyphs[i] + gap;
             c.drawText(q.values[i], x, base, text);
             x += q.widths[i] + spacing;
         }
-        text.setColor(textColor);
         String stale = HomeData.staleness(data.pricesAt, 5 * 60_000L);
         if (stale.isEmpty()) return;
         if (clock) c.drawText(stale, x - spacing + 24 * k + staleQuote.measureText(stale), base, staleQuote);
@@ -2462,7 +2468,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                         okDown = true;
                         okHeld = false;
                         handler.removeCallbacks(holdStart);
-                        holdArmed = sheetOpen ? canToggleShelf(gridIndex) : canReorder() || canPickMenu();
+                        holdArmed = sheetOpen ? canToggleShelf(gridIndex) : canReorder() || canPickMenu() || canFilter();
                         if (holdArmed) handler.postDelayed(holdStart, HOLD_MS);
                     } else if (okDown && holdArmed && e.isLongPress()) {
                         hold();
@@ -2693,10 +2699,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     // MARK: - Holding OK: All Apps puts the app on the shelf or takes it off; on the shelf, the app is lifted to move;
-    // on a pick, its menu opens
+    // on a pick, its menu opens; on the Movies or Shows tab, its filters
 
     private void hold() {
-        if (sheetOpen) toggleShelf(); else if (canPickMenu()) openPickMenu(); else startReorder();
+        if (sheetOpen) toggleShelf(); else if (canPickMenu()) openPickMenu(); else if (canFilter()) openFilters(); else startReorder();
     }
 
     /** TalkBack's long click on an app in All Apps (once per press, if the remote's hold also arrives). */
@@ -2758,25 +2764,36 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // MARK: - A pick's menu (OK held on its card): its trailer on YouTube; watched, rated or not recommended on Trakt
 
     private static final int M_TRAILER = 0, M_WATCHED = 1, M_HIDE = 2;
-    private static final float MENU_W = 600, MENU_ITEM_H = 88, MENU_PAD = 14, MENU_GAP = 6;
+    // 658 wide: beside the wide card at the row's left end, it ends at the content's right edge (CONTENT_R).
+    private static final float MENU_W = 658, MENU_ITEM_H = 88, MENU_PAD = 14, MENU_GAP = 6;
     /** A rating goes to Trakt this long after the last star pressed (or as the menu closes): one request, not one a press. */
     private static final long RATE_AFTER_MS = 1200;
     private static final String YOUTUBE = "com.google.android.youtube.tv";
     private final Spring menu = new Spring(0.34f, 0.86f, 0);
-    private final Spring[] menuFocus = {new Spring(0.26f, 0.85f, 0), new Spring(0.26f, 0.85f, 0), new Spring(0.26f, 0.85f, 0)};
+    private final Spring[] menuFocus = new Spring[5];   // a pick's three items, or the filters' four rows and Reset
     private final Spring[] starFocus = new Spring[10];   // Trakt's own 1 to 10 (five stars with halves)
     /** While the menu is open, its card goes to the row's left end and the menu takes its right: the row's shift. */
-    private final Spring menuShift = new Spring(0.2f, 1, 0);
+    private final Spring menuShift = new Spring(0.16f, 1, 0);
     private boolean menuWaitsRow;   // the screen is copied, and the menu shown, once the row stops there
     private Recs.Pick hideAfter;    // "Don't recommend": it leaves the row once the menu has faded
+    // The same menu as a tab's filters (OK held on Movies or Shows): centered, nothing moves behind it. Its rows change
+    // `filterDraft` (indexes into Recs.Filter's lists: year, rating, genre, and the status for shows), which the row
+    // takes as the menu closes.
+    private static final int F_YEAR = 0, F_RATING = 1, F_GENRE = 2, F_STATUS = 3;
+    private static final float FILTER_W = 820, FILTER_HEAD = 92;
+    private boolean menuFilters;
+    private String filterKind;
+    private final int[] filterDraft = new int[4];
     private boolean menuOpen, menuDirty, menuBackDirty, menuRight, menuCovers, menuSignedIn;   // signed in to Trakt: read once as it opens (a file)
     private Recs.Pick menuPick;
     private int menuCard, menuIndex, starIndex, menuShotId, menuWarm;
     private Bitmap menuShot;    // the screen behind the menu: a small copy, blurred and dimmed
     private Bitmap menuSharp;   // and as it was, full size: it stands in for the home screen while the menu fades
+    private Bitmap shotNext, sharpNext;   // the two copies of the screen as they come in (the menu shows once both have)
+    private int[] shotPx;
     private Scene menuScene;    // the panel's glass, over that copy
     private final Paint shotPaint = new Paint(Paint.FILTER_BITMAP_FLAG), starLine = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private Paint menuText;
+    private Paint menuText, menuHint, menuTitle, menuValue, lEmpty;
     private final RectF menuRect = new RectF();   // the panel at rest, on screen
     private final Rect menuBounds = new Rect();   // its two layers: the panel and room for its shadow
     // Trakt, per title (Recs.key): marked watched or hidden from here; the stars chosen; the stars sent (or on their way)
@@ -2793,6 +2810,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private int menuItems() {
+        if (menuFilters) return "tv".equals(filterKind) ? 5 : 4;   // the rows, then Reset
         return Trakt.hasKey() ? 3 : 1;
     }
 
@@ -2809,6 +2827,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sendRating();               // one still waiting, for another title, goes now
         okHeld = true;              // the release of this press opens nothing
         menuOpen = true;
+        menuFilters = false;
         menuPick = cards.get(cardIndex);
         menuCard = cardIndex;
         menuIndex = M_TRAILER;
@@ -2821,7 +2840,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // The card goes to the row's left end, the menu on its right: where it already is, the menu opens at once;
         // elsewhere the row slides there first, and the screen is copied once it stops (doFrame).
         menuShift.target = menuCard < slots ? Math.max(0, cardRects[menuCard].left - MARGIN * k) : 0;
-        menuWaitsRow = Math.abs(menuShift.value - menuShift.target) > 0.5f;
+        menuWaitsRow = Math.abs(menuShift.value - menuShift.target) >= 3 * k;
         menuBackDirty = true;
         click.open();
         if (!menuWaitsRow) {
@@ -2831,46 +2850,260 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         wake();
     }
 
+    private boolean canFilter() {
+        return !sheetOpen && zone == Z_TOP && topIndex < 3 && picksOn();
+    }
+
+    /** The tab's filters, over the screen blurred as behind a pick's menu (Explore has none: a toast says where they are). */
+    private void openFilters() {
+        handler.removeCallbacks(holdStart);
+        holdArmed = false;
+        if (menuOpen || !canFilter()) return;
+        okHeld = true;
+        String kind = TAB_KIND[topIndex];
+        if (kind == null) {
+            showToast(Ui.tr("Filters are on the Movies and Shows tabs."));
+            return;
+        }
+        if (!Recs.canFilter()) {
+            showToast(Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."));
+            return;
+        }
+        menuOpen = menuFilters = true;
+        menuPick = null;
+        filterKind = kind;
+        Recs.Filter f = recs.filter(kind);
+        filterDraft[F_YEAR] = f.year;
+        filterDraft[F_RATING] = f.rating;
+        filterDraft[F_GENRE] = f.genre;
+        filterDraft[F_STATUS] = f.status;
+        menuIndex = 0;
+        aimMenu(true);
+        menuShot = menuSharp = null;
+        menuWaitsRow = false;
+        handler.removeCallbacks(focusBackground);
+        menuBackDirty = true;
+        click.open();
+        placeMenu();
+        captureBehind(++menuShotId);
+        wake();
+    }
+
+    /** As the filters close: the row takes them, if they changed (Recs asks Trakt for its titles again). */
+    private void applyFilters() {
+        String kind = filterKind;
+        Recs.Filter f = new Recs.Filter(filterDraft[F_YEAR], filterDraft[F_RATING], filterDraft[F_GENRE],
+                "tv".equals(kind) ? filterDraft[F_STATUS] : 0);
+        if (kind == null || f.equals(recs.filter(kind))) return;
+        if (kind.equals(TAB_KIND[tab])) {
+            cardIndex = 0;
+            rowReset = true;
+        }
+        recs.setFilter(kind, f, () -> showToast(Ui.tr("Trakt didn't answer. Try again in a moment.")));
+        heroDirty = true;
+    }
+
+    /** The options a filter row cycles through (the first one: all). */
+    private static int filterOptions(int field) {
+        switch (field) {
+            case F_YEAR: return Recs.Filter.YEARS.length;
+            case F_RATING: return Recs.Filter.RATINGS.length;
+            case F_GENRE: return Recs.Filter.GENRES.length;
+            default: return Recs.Filter.STATUSES.length;
+        }
+    }
+
+    private static String filterName(int field) {
+        switch (field) {
+            case F_YEAR: return Ui.tr("filter|Year");
+            case F_RATING: return Ui.tr("filter|Rating");
+            case F_GENRE: return Ui.tr("filter|Genre");
+            default: return Ui.tr("filter|Status");
+        }
+    }
+
+    private static String filterValue(int field, int i) {
+        if (i == 0) return Ui.tr("filter|All");
+        switch (field) {
+            case F_YEAR:
+                int from = Recs.Filter.YEARS[i];
+                return from == 1900 ? Ui.trf("filter|Before {year}", "year", "1990") : Ui.trf("filter|{year}s", "year", String.valueOf(from));
+            case F_RATING: return Ui.trf("filter|{n}+", "n", Recs.Filter.RATINGS[i]);
+            case F_GENRE: return genreName(Recs.Filter.GENRES[i]);
+            default:
+                switch (i) {
+                    case 1: return Ui.tr("status|Returning");
+                    case 2: return Ui.tr("status|Upcoming");
+                    case 3: return Ui.tr("status|Ended");
+                    default: return Ui.tr("status|Canceled");
+                }
+        }
+    }
+
+    /** Trakt's genres (Recs.Filter.GENRES) in the TV's language. */
+    private static String genreName(String slug) {
+        switch (slug) {
+            case "action": return Ui.tr("genre|Action");
+            case "adventure": return Ui.tr("genre|Adventure");
+            case "animation": return Ui.tr("genre|Animation");
+            case "comedy": return Ui.tr("genre|Comedy");
+            case "crime": return Ui.tr("genre|Crime");
+            case "documentary": return Ui.tr("genre|Documentary");
+            case "drama": return Ui.tr("genre|Drama");
+            case "family": return Ui.tr("genre|Family");
+            case "fantasy": return Ui.tr("genre|Fantasy");
+            case "history": return Ui.tr("genre|History");
+            case "horror": return Ui.tr("genre|Horror");
+            case "mystery": return Ui.tr("genre|Mystery");
+            case "romance": return Ui.tr("genre|Romance");
+            case "science-fiction": return Ui.tr("genre|Science Fiction");
+            case "thriller": return Ui.tr("genre|Thriller");
+            case "war": return Ui.tr("genre|War");
+            default: return Ui.tr("genre|Western");
+        }
+    }
+
+    private boolean filtersDrafted() {
+        return filterDraft[F_YEAR] != 0 || filterDraft[F_RATING] != 0 || filterDraft[F_GENRE] != 0
+                || ("tv".equals(filterKind) && filterDraft[F_STATUS] != 0);
+    }
+
     /**
-     * The screen, copied full size (it stands in for the home screen while the menu fades), and from it a small copy at
-     * the glass's image size (Backdrop.GW × GH), blurred like Backdrop's photos (~35 px at full size) and dimmed a
-     * little: the menu fades in over it, and the panel's glass shows the same copy, so it bends what is really behind it
-     * (its own Scene: the shelf's glass keeps the photo). The small copy is made on another thread (~100 ms on this TV,
-     * which the frames on screen don't wait for). Without the copy within 250 ms (PixelCopy refused or slow), over a
-     * plain dim and the shelf's kind of glass.
+     * Keys while the filters are open: ↑ ↓ between the rows, ← → through a row's options (they stop at the ends), OK on
+     * Reset sets them all back to All and anywhere else closes; Back closes too. Closing applies them.
+     */
+    private boolean filterKey(KeyEvent e, boolean down) {
+        int n = menuItems();
+        switch (e.getKeyCode()) {
+            case KeyEvent.KEYCODE_DPAD_UP:
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                if (down) {
+                    int next = Math.max(0, Math.min(n - 1, menuIndex + (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1)));
+                    if (next != menuIndex) {
+                        menuIndex = next;
+                        aimMenu(false);
+                        click.move();
+                        announceForAccessibility(menuLabel(menuIndex));
+                    }
+                }
+                return true;
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                if (down && menuIndex < n - 1) {
+                    int field = menuIndex, dx = e.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
+                    int next = Math.max(0, Math.min(filterOptions(field) - 1, filterDraft[field] + dx));
+                    if (next != filterDraft[field]) {
+                        filterDraft[field] = next;
+                        menuDirty = true;
+                        click.move();
+                        announceForAccessibility(menuLabel(menuIndex));
+                    }
+                }
+                return true;
+            case KeyEvent.KEYCODE_DPAD_CENTER:
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                if (down) {
+                    if (e.getRepeatCount() == 0) {
+                        okDown = true;
+                        okHeld = false;
+                    }
+                } else {
+                    if (okDown && !okHeld && !e.isCanceled()) {
+                        click.open();
+                        if (menuIndex == n - 1) {
+                            java.util.Arrays.fill(filterDraft, 0);
+                            menuDirty = true;
+                            announceForAccessibility(Ui.tr("filter|All"));
+                        } else {
+                            closePickMenu(false);
+                        }
+                    }
+                    okDown = okHeld = false;
+                }
+                return true;
+            case KeyEvent.KEYCODE_BACK:
+                if (down) {
+                    if (e.getRepeatCount() == 0) backDown = true;
+                } else {
+                    if (backDown && !e.isCanceled()) {
+                        closePickMenu(false);
+                        click.move();
+                    }
+                    backDown = false;
+                }
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * The screen, copied twice: first small (half the glass's image size, scaled by the GPU as it copies), blurred like
+     * Backdrop's photos (~35 px at full size) and dimmed a little on another thread, then scaled up to the glass's image
+     * size; then full size (it stands in for the home screen while the menu fades). The menu fades in over the blurred
+     * copy, and the panel's glass shows the same copy, so it bends what is really behind it (its own Scene). On this TV
+     * the small copy takes ~40 ms and its blur ~40 more, while the full one is coming (~60 ms): the menu shows ~0.1 s
+     * after the row stops. Without the copies within 250 ms (PixelCopy refused or slow), over a plain dim and the
+     * shelf's kind of glass.
      */
     private void captureBehind(int id) {
         handler.postDelayed(menuFallback, 250);
-        int sw = Backdrop.GW, sh = Backdrop.GH, radius = Math.round(8 * sw / (w / 4f)), keep = Math.round(256 * (1 - tone(0.1f, 0.3f)));
+        shotNext = sharpNext = null;
+        shotPx = null;
+        int sw = Backdrop.GW / 2, sh = Backdrop.GH / 2, radius = Math.round(8 * sw / (w / 4f)), keep = Math.round(256 * (1 - tone(0.1f, 0.3f)));
+        Bitmap small = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
         Bitmap full = Bitmap.createBitmap(Math.max(1, w), Math.max(1, h), Bitmap.Config.ARGB_8888);
         try {
-            PixelCopy.request(activity.getWindow(), full, result -> {
+            PixelCopy.request(activity.getWindow(), small, result -> {
                 if (result != PixelCopy.SUCCESS || id != menuShotId || !menuOpen) {
                     showMenu(id);
                     return;
                 }
                 SHOTS.execute(() -> {
-                    int[] px = Backdrop.reduce(full, sw, sh, radius, 3);
+                    int[] px = Backdrop.reduce(small, sw, sh, radius, 3);
                     for (int i = 0; i < px.length; i++) {
                         int c = px[i];
                         px[i] = 0xFF000000 | (((c >> 16) & 255) * keep >> 8) << 16 | (((c >> 8) & 255) * keep >> 8) << 8 | (c & 255) * keep >> 8;
                     }
                     Bitmap shot = Bitmap.createBitmap(px, sw, sh, Bitmap.Config.ARGB_8888);
+                    Bitmap glass = Bitmap.createScaledBitmap(shot, Backdrop.GW, Backdrop.GH, true);
+                    int[] glassPx = new int[Backdrop.GW * Backdrop.GH];
+                    glass.getPixels(glassPx, 0, Backdrop.GW, 0, 0, Backdrop.GW, Backdrop.GH);
+                    glass.recycle();
                     handler.post(() -> {
                         if (id != menuShotId || !menuOpen) return;
-                        if (menuScene == null) menuScene = new Scene(false);
-                        menuScene.setSize(w, h);
-                        menuScene.setGlassImage(px);
-                        menuShot = shot;
-                        menuSharp = full;
-                        menuBackDirty = true;
-                        showMenu(id);
+                        shotNext = shot;
+                        shotPx = glassPx;
+                        copiesIn(id);
                     });
                 });
+                PixelCopy.request(activity.getWindow(), full, done -> {
+                    if (done != PixelCopy.SUCCESS || id != menuShotId || !menuOpen) {
+                        showMenu(id);
+                        return;
+                    }
+                    sharpNext = full;
+                    copiesIn(id);
+                }, handler);
             }, handler);
         } catch (IllegalArgumentException e) {   // no surface yet
             showMenu(id);
         }
+    }
+
+    /** Both copies of the screen are in: the menu's glass reads the blurred one, and the fade starts. */
+    private void copiesIn(int id) {
+        if (shotNext == null || sharpNext == null || id != menuShotId || !menuOpen) return;
+        if (menuScene == null) menuScene = new Scene(false);
+        menuScene.setSize(w, h);
+        menuScene.setGlassImage(shotPx);
+        menuShot = shotNext;
+        menuSharp = sharpNext;
+        shotNext = sharpNext = null;
+        shotPx = null;
+        menuBackDirty = true;
+        showMenu(id);
     }
 
     /** Starts the fade-in, once per opening (the copy or the fallback, whichever comes first). */
@@ -2886,11 +3119,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private void closePickMenu(boolean snap) {
         if (!menuOpen && menu.value <= 0) return;
+        if (menuOpen && menuFilters) applyFilters();
         menuOpen = false;
         menuWarm = 0;
         menuWaitsRow = false;
         handler.removeCallbacks(menuFallback);
-        if (running && zone == Z_CARDS) handler.postDelayed(focusBackground, FOCUS_REST_MS);
+        if (running && zone == Z_CARDS) handler.post(focusBackground);
         sendRating();
         menu.target = 0;
         if (snap) {
@@ -2910,6 +3144,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private String menuLabel(int i) {
+        if (menuFilters) {
+            if (i == menuItems() - 1) return Ui.tr("Reset filters");
+            return Ui.trf("filter|{name}: {value}", "name", filterName(i), "value", filterValue(i, filterDraft[i]));
+        }
         if (i == M_TRAILER) return Ui.tr("Watch trailer");
         if (i == M_HIDE) return Ui.tr("Don't recommend");
         return menuPick != null && stars(menuPick) ? Ui.tr("Rate it on Trakt") : Ui.tr("Watched");
@@ -2917,6 +3155,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Keys while the menu is open: ↑ ↓ between its items, ← → along the stars, OK, and Back closes it. */
     private boolean menuKey(KeyEvent e, boolean down) {
+        if (menuFilters) return filterKey(e, down);
         switch (e.getKeyCode()) {
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_DPAD_DOWN:
@@ -3106,6 +3345,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * side.
      */
     private void placeMenu() {
+        if (menuFilters) {
+            placeFilters();
+            return;
+        }
         boolean card = menuCardShown();
         int items = menuItems();
         float pw = MENU_W * k, ph = items * MENU_ITEM_H * k + (items - 1) * MENU_GAP * k + 2 * MENU_PAD * k;
@@ -3126,9 +3369,26 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
+    /** The filters: in the middle of the screen, a heading over their rows; they grow from their center. */
+    private void placeFilters() {
+        int items = menuItems();
+        float pw = FILTER_W * k, ph = FILTER_HEAD * k + items * MENU_ITEM_H * k + (items - 1) * MENU_GAP * k + 2 * MENU_PAD * k;
+        menuRect.set((w - pw) / 2, (h - ph) / 2, (w + pw) / 2, (h + ph) / 2);
+        snap(menuRect);
+        int m = Math.round(60 * k);
+        menuBounds.set(Math.round(menuRect.left) - m, Math.round(menuRect.top) - m, Math.round(menuRect.right) + m,
+                Math.round(menuRect.bottom) + 2 * m);
+        for (View v : new View[] {menuGlass, menuItemsLayer}) {
+            measure(v, menuBounds.width(), menuBounds.height());
+            v.layout(menuBounds.left, menuBounds.top, menuBounds.right, menuBounds.bottom);
+            v.setPivotX(menuBounds.width() / 2f);
+            v.setPivotY(menuBounds.height() / 2f);
+        }
+    }
+
     /** Behind the menu: the screen blurred and dimmed, and the card it belongs to sharp where it was. */
     private void drawMenuBack(Canvas c) {
-        if (menuPick == null) return;
+        if (menuPick == null && !menuFilters) return;
         if (menuShot != null) {
             c.drawBitmap(menuShot, null, screen, shotPaint);
         } else {
@@ -3156,6 +3416,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** The items, focused the tvOS way (a white pill); the second one, once watched, ten stars. */
     private void drawMenuItems(Canvas c) {
+        if (menuFilters) {
+            drawFilterItems(c);
+            return;
+        }
         if (menuPick == null) return;
         float ih = MENU_ITEM_H * k, pad = MENU_PAD * k, gap = MENU_GAP * k;
         for (int i = 0; i < menuItems(); i++) {
@@ -3172,7 +3436,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             }
             int ink = i != M_TRAILER && !menuSignedIn ? tone(L_FAINT, 0xFF8E8E93) : blend(tone(L_INK, WHITE), L_INK, f);
             float cy = cell.centerY(), textX = cell.left + 84 * k;
-            Symbols.draw(getContext(), c, i == M_TRAILER ? "play" : i == M_WATCHED ? "check" : "thumb_down", cell.left + 46 * k, cy, 30 * k, ink);
+            Symbols.draw(getContext(), c, i == M_TRAILER ? "play" : i == M_WATCHED ? "check" : "hide", cell.left + 46 * k, cy, 30 * k, ink);
             if (i == M_WATCHED && stars(menuPick)) {
                 drawStars(c, textX, cy, ink);
             } else {
@@ -3182,11 +3446,55 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
-    /** Ten stars from x: filled up to the rating, the focused one larger; the rating's number at the end. */
+    /**
+     * The filters: the heading, then a row per filter, its name on the left and its value on the right between ‹ and ›
+     * (faint at the ends); the last row sets them all back to All.
+     */
+    private void drawFilterItems(Canvas c) {
+        float ih = MENU_ITEM_H * k, pad = MENU_PAD * k, gap = MENU_GAP * k, inset = 30 * k;
+        int n = menuItems();
+        menuTitle.setColor(tone(L_INK, WHITE));
+        String heading = Ui.trf("Filters: {tab}", "tab", tabs()["tv".equals(filterKind) ? 2 : 1]);
+        c.drawText(heading, menuRect.left + pad + inset, menuRect.top + pad + FILTER_HEAD * k * 0.6f, menuTitle);
+        for (int i = 0; i < n; i++) {
+            float f = Ui.clamp(menuFocus[i].value), y = menuRect.top + pad + FILTER_HEAD * k + i * (ih + gap);
+            cell.set(menuRect.left + pad, y, menuRect.right - pad, y + ih);
+            if (f > 0.01f) {
+                tmp.set(cell);
+                tmp.offset(0, 6 * k * f);
+                shadow.setColor(Ui.alpha(0xFF000000, tone(0.12f, 0.3f) * f));
+                shadows.draw(c, tmp, ih / 2, SHADOW_BLUR * k, shadow);
+                fill.setShader(null);
+                fill.setColor(Ui.alpha(0xFFFFFFFF, f));
+                c.drawRoundRect(cell, ih / 2, ih / 2, fill);
+            }
+            int ink = blend(tone(L_INK, WHITE), L_INK, f), faint = Ui.alpha(ink, 0.3f);
+            float cy = cell.centerY();
+            if (i == n - 1) {
+                menuText.setColor(filtersDrafted() ? ink : Ui.alpha(ink, 0.45f));
+                c.drawText(Ui.tr("Reset filters"), cell.left + inset, cy + Ui.halfCap(menuText), menuText);
+                continue;
+            }
+            menuText.setColor(ink);
+            c.drawText(filterName(i), cell.left + inset, cy + Ui.halfCap(menuText), menuText);
+            int at = filterDraft[i], last = filterOptions(i) - 1;
+            String value = filterValue(i, at);
+            float size = 30 * k, right = cell.right - inset, vw = menuValue.measureText(value);
+            Symbols.draw(getContext(), c, "chevron_right", right - size / 2, cy, size, at < last ? ink : faint);
+            menuValue.setColor(ink);
+            c.drawText(value, right - size - 8 * k - vw, cy + Ui.halfCap(menuValue), menuValue);
+            Symbols.draw(getContext(), c, "chevron_left", right - size - 16 * k - vw - size / 2, cy, size, at > 0 ? ink : faint);
+        }
+    }
+
+    /**
+     * Ten stars from x: filled up to the rating, the focused one larger; at the end, what OK on the focused one gives, as
+     * Trakt's site says it: its number and its word ("8 · Great"), so a 10-point scale reads as what it means.
+     */
     private void drawStars(Canvas c, float x, float cy, int ink) {
         Integer value = rated.get(Recs.key(menuPick));
         int stars = value == null ? 0 : value;
-        float size = 30 * k, step = 40 * k;
+        float size = 26 * k, step = 34 * k;
         for (int j = 0; j < starFocus.length; j++) {
             float g = Ui.clamp(starFocus[j].value), sz = size * (1 + 0.3f * g);
             boolean have = j < stars;
@@ -3201,9 +3509,32 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawPath(star, starLine);
             c.restore();
         }
-        if (stars > 0) {
-            menuText.setColor(ink);
-            c.drawText(starsText(stars), x + starFocus.length * step + 8 * k, cy + Ui.halfCap(menuText), menuText);
+        String number = starsText(starIndex + 1), word = ratingWord(starIndex + 1);
+        float left = x + (starFocus.length - 1) * step + size + 22 * k, end = cell.right - 18 * k;   // cell: the item's pill
+        menuText.setColor(ink);
+        c.drawText(number, left, cy + Ui.halfCap(menuText), menuText);
+        left += menuText.measureText(number) + 12 * k;
+        // A long word (another language's) gets smaller rather than cut: this is redrawn only while the focus moves.
+        float size0 = menuHint.getTextSize(), ww = menuHint.measureText(word);
+        if (ww > end - left) menuHint.setTextSize(size0 * Math.max(0.6f, (end - left) / ww));
+        menuHint.setColor(Ui.alpha(ink, 0.7f));
+        c.drawText(word, left, cy + Ui.halfCap(menuHint), menuHint);
+        menuHint.setTextSize(size0);
+    }
+
+    /** Trakt's words for its 1 to 10, as its site shows them beside the hearts. */
+    private static String ratingWord(int value) {
+        switch (value) {
+            case 1: return Ui.tr("rating|Weak Sauce :(");
+            case 2: return Ui.tr("rating|Terrible");
+            case 3: return Ui.tr("rating|Bad");
+            case 4: return Ui.tr("rating|Poor");
+            case 5: return Ui.tr("rating|Meh");
+            case 6: return Ui.tr("rating|Fair");
+            case 7: return Ui.tr("rating|Good");
+            case 8: return Ui.tr("rating|Great");
+            case 9: return Ui.tr("rating|Superb");
+            default: return Ui.tr("rating|Totally Ninja!");
         }
     }
 
@@ -3612,7 +3943,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         return s.toString();
     }
 
-    // MARK: - Light design: title, tabs, cards and icon-only buttons
+    // MARK: - Light design: tabs, cards and icon-only buttons
 
     private void layoutLight() {
         if (lTab == null) return;
@@ -3690,14 +4021,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (String other : TAB_KIND) {
             if (other == kind) continue;
             List<Recs.Pick> first = recs.now(other);
-            for (int i = 0; i < Math.min(Recs.PAGE, first.size()); i++) recs.backdrop(first.get(i));
+            for (int i = 0; i < Math.min(Recs.FIRST, first.size()); i++) recs.backdrop(first.get(i));
         }
-        // Picks bring their own background (the focused card's: at once for a new row, else once the focus rests);
-        // without them (no TMDB key), your photo if there is one.
+        // Picks bring their own background (the focused card's, fading in); without them (no TMDB key), your photo if
+        // there is one.
         boolean own = !picksOn() && Photos.on(getContext());
         if (!own && !cards.isEmpty() && bgTo != null && !reset) {
             handler.removeCallbacks(focusBackground);
-            handler.postDelayed(focusBackground, FOCUS_REST_MS);
+            handler.post(focusBackground);
         } else {
             Backdrop b = own ? Photos.backdrop(getContext(), ownReady) : focusedBackdrop();
             if (b != null || (cards.isEmpty() && !own)) showBackdrop(b);
@@ -3720,7 +4051,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         return b != null ? b : bgTo;
     }
 
-    /** Once the focus rests on a card (moving along the row doesn't flash every photo by), its photo is the background. */
+    /** The focused card's photo becomes the background, fading in (from the main loop, after the key that moved it). */
     private void backgroundFromFocus() {
         if (!running || !picksOn() || cardIndex >= cards.size()) return;
         Backdrop b = recs.backdrop(cards.get(cardIndex));
@@ -3731,7 +4062,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void setSlots(int n, boolean reset) {
         while (cardFocus.size() < n) {
             cardFocus.add(new Spring(0.32f, 0.78f, 0));
-            cardWide.add(new Spring(0.4f, 0.7f, 0, 0.56f));   // wide in 0.22 s, ~5% over at 0.3 s, then softly back
+            cardWide.add(new Spring(0.4f, 0.76f, 0, 0.56f));   // wide in 0.22 s, ~2.5% over at 0.33 s, then softly back
         }
         if (cardRects.length < n) {
             int size = Math.max(n, cardRects.length * 2);
@@ -3864,8 +4195,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
             return;
         }
-        String hello = Ui.tr("For You");
-        c.drawText(hello, MARGIN * k - Ui.leftBearing(lTitle, hello), L_TITLE_BASE * k, lTitle);
         // Text tabs (the selected one in bold, in the main text color); with focus on the tabs, the selected one gets
         // the white pill with a shadow and grows a little (the tvOS focus).
         float focus = Ui.clamp(topFocus[tab].value);
@@ -3888,7 +4217,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             }
             Paint p = i == tab ? lTabOn : lTab;
             if (i == tab) lTabOn.setColor(blend(tone(L_INK, WHITE), L_INK, focus));   // always dark on the white pill
-            c.drawText(tabs()[i], r.centerX() - p.measureText(tabs()[i]) / 2, r.centerY() + Ui.halfCap(p), p);
+            float tw = p.measureText(tabs()[i]);
+            c.drawText(tabs()[i], r.centerX() - tw / 2, r.centerY() + Ui.halfCap(p), p);
+            if (TAB_KIND[i] != null && !recs.filter(TAB_KIND[i]).none()) {
+                // Filtered: a dot at the name's top right, in Apple's blue.
+                fill.setShader(null);
+                fill.setColor(0xFF0A84FF);
+                c.drawCircle(r.centerX() + tw / 2 + 9 * k, r.centerY() - Ui.halfCap(p) - 2 * k, 5 * k, fill);
+            }
+        }
+        String kind = TAB_KIND[tab];
+        if (slots == 0 && kind != null && !recs.filter(kind).none() && !recs.loading(kind)) {
+            c.drawText(Ui.tr("Nothing here with these filters. Hold OK on the tab to change them."), w / 2f,
+                    (L_CARDS_TOP + L_CARD_H / 2) * k + Ui.halfCap(lEmpty), lEmpty);
         }
         // The row, from each card's width this frame (never under the tall one); x0 is each card's place without the
         // stretch. The card the focus goes to pushes the next one only by what would bring their edges (as drawn, the
@@ -3993,7 +4334,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.set(-bw / 2, -ch / 2, bw / 2, ch / 2);
         tmp.offset(0, (10 + 14 * f) * k);
         shadowDeep.setColor(Ui.alpha(0xFF000000, tone(0.14f, 0.32f) + tone(0.2f, 0.28f) * f));
-        shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep);
+        // A card with a title is opaque (its photo, or its color until the photo comes): its shadow's middle, which it
+        // covers, isn't drawn (with the taller cards, the row went from 58 to 57 frames a second without this).
+        shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep, p != null);
         c.restore();
         Backdrop b = p == null ? null : recs.backdrop(p);
         float shown = b == null || b.card == null ? 0 : imageAt[i] <= 1 ? 1 : Ui.clamp((up - imageAt[i]) / (float) IMAGE_FADE_MS);
@@ -4116,8 +4459,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             tmp.offset(0, (6 + 8 * f) * k);
             shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f) + tone(0.14f, 0.2f) * f));
             shadows.draw(c, tmp, rad, SHADOW_BLUR * k, shadow);
-            scene.liquid(c, cell, rad, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), 12 * k, 8 * k,
-                    tone(0.6f, 0.45f), 1 - f);
+            scene.clear(c, cell, rad, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1 - f);
             if (f > 0.01f) {
                 fill.setShader(null);
                 fill.setColor(Ui.alpha(0xFFFFFFFF, f));
@@ -4156,17 +4498,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case Z_CARDS:
                 if (dx != 0) {
                     int next = cardIndex + dx;
-                    // → past the last card: three more (empty at first, while Recs looks their titles up).
-                    if (next >= slots && dx > 0 && recs.more(TAB_KIND[tab])) updateCards();
+                    // Onto the last card: three more (empty at first, while Recs looks their titles up), so the next one's
+                    // edge shows past it as the row scrolls.
+                    if (next >= slots - 1 && dx > 0 && recs.more(TAB_KIND[tab])) updateCards();
                     if (next < 0 || next >= slots) {
                         bump(dx);
                         return true;
                     }
                     cardIndex = next;
-                    // The background follows once the focus rests: its crossfade redraws the sky and every glass, and
-                    // on top of the cards' slide it halved the frame rate (JMGO N1S Ultra: 38 → 57 ms a frame).
+                    // The background follows at once: with the shelf's and the buttons' glass clear, its crossfade only
+                    // redraws the sky (JMGO N1S Ultra: 59 frames a second along the row, fades included).
                     handler.removeCallbacks(focusBackground);
-                    handler.postDelayed(focusBackground, FOCUS_REST_MS);
+                    handler.post(focusBackground);
                 } else if (dy < 0) {
                     zone = Z_TOP;
                     topIndex = tab;     // as on Apple TV: moving up to the tabs focuses the selected tab

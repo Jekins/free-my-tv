@@ -199,6 +199,43 @@ final class Shaders {
         "}\n";
 
     /**
+     * The same glass, clear: what is behind it shows through as it is (the layers under it, no copy of the photo), so a
+     * background that changes needs no redraw of the glass. Only what LIQUID adds over the image, as translucent color:
+     * the tint, the lift, the shade toward the bottom, the light along the top, and the rim's highlight and halo. With
+     * `m` the bottom's shade, the result over the background `bg` is (mix(bg, tint) + lift) · m + light: premultiplied,
+     * color (tint · a + lift) · m + light and alpha 1 − (1 − a) · m.
+     */
+    static final String CLEAR =
+        "uniform float2 center;\n" +
+        "uniform float2 halfSize;\n" +
+        "uniform float radius;\n" +
+        "uniform half4 tint;\n" +
+        "uniform float lift;\n" +
+        "uniform float specular;\n" +
+        "half4 main(float2 xy) {\n" +
+        "  float2 d = xy - center;\n" +
+        "  float2 q = abs(d) - (halfSize - radius);\n" +
+        "  float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;\n" +
+        "  float aa = clamp(0.5 - sd, 0.0, 1.0);\n" +
+        "  if (aa <= 0.0) { return half4(0.0); }\n" +
+        "  float2 sg = float2(d.x < 0.0 ? -1.0 : 1.0, d.y < 0.0 ? -1.0 : 1.0);\n" +
+        "  float2 n = (q.x > 0.0 && q.y > 0.0) ? normalize(q) * sg : (q.x > q.y ? float2(sg.x, 0.0) : float2(0.0, sg.y));\n" +
+        "  float inner = -sd;\n" +
+        "  float ny = d.y / halfSize.y;\n" +
+        "  half m = half(1.0 - 0.12 * smoothstep(0.1, 1.0, ny));\n" +
+        "  float2 L = float2(-0.4, -0.917);\n" +
+        "  float facing = clamp(dot(n, L), 0.0, 1.0);\n" +
+        "  float back = clamp(-dot(n, L), 0.0, 1.0);\n" +
+        "  float rim = 1.0 - smoothstep(0.0, 2.4, inner);\n" +
+        "  float halo = 1.0 - smoothstep(0.0, 11.0, inner);\n" +
+        "  float spec = rim * (0.22 + 0.78 * facing + 0.4 * back) + halo * (0.12 * facing + 0.05 * back);\n" +
+        "  half light = half(0.045 * (1.0 - smoothstep(-1.0, -0.15, ny)) + spec * specular);\n" +
+        "  half3 col = (tint.rgb * tint.a + half3(lift)) * m + half3(light);\n" +
+        "  half a = 1.0 - (1.0 - tint.a) * m;\n" +
+        "  return half4(col, a) * half(aa);\n" +
+        "}\n";
+
+    /**
      * Glass clock for the screensaver (like the iOS 26 lock screen's): the digits are clear glass over the photo
      * moving behind them. `slope` (opaque): R and G = the surface slope (the height gradient, pointing into the
      * stroke; 0.5 = flat), B = the height (0.5 at the edge, 1 in the middle of the strokes); `cover`: the sharp
