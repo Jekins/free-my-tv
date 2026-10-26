@@ -49,6 +49,7 @@ final class Recs {
         int id;
         String kind;            // "movie" or "tv"
         String title, backdrop, logo, meta = "", app, pkg;   // logo: TMDB's path of the title's logo (a PNG)
+        boolean rec;            // one of the recommendations (Explore, Movies, Shows), not only a filter's or the watchlist's
         String link;            // Watchmode URL or Filmix search-suggestion payload; null opens the app's home
         String originalTitle;
         int year;
@@ -64,6 +65,9 @@ final class Recs {
     static final int FIRST = 4, PAGE = 3;
 
     interface Listener { void onRecs(); }
+
+    /** The Watchlist row's kind (its titles are movies and shows). */
+    static final String WATCHLIST = "watchlist";
 
     /**
      * A row's filters (Movies or Shows: hold OK on its tab), which Trakt applies to its recommendations: indexes into
@@ -147,7 +151,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 15;
+    private static final int CACHE_VERSION = 16;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
@@ -227,8 +231,8 @@ final class Recs {
     /** Filmix: the titles not looked up yet, in Trakt's (or TMDB's) order; picks takes them as the rows need them. */
     private final List<Pick> queue = new ArrayList<>();
     /** How many cards each row (Explore, Movies, Shows) shows; reaching the last one adds PAGE. Main thread. */
-    private final int[] shown = {FIRST, FIRST, FIRST};
-    private final boolean[] loadingMore = new boolean[3];
+    private final int[] shown = {FIRST, FIRST, FIRST, FIRST};
+    private final boolean[] loadingMore = new boolean[4];
     private volatile int period = -1;
     private volatile long listAt;
     private volatile boolean fetching;
@@ -244,19 +248,31 @@ final class Recs {
     private final Set<String> hidden = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final SharedPreferences hiddenPrefs;
     /** Each row's filter (Explore has none), kept apart from the cache like `hidden`. */
-    private final Filter[] filters = {Filter.ANY, Filter.ANY, Filter.ANY};
+    private final Filter[] filters = {Filter.ANY, Filter.ANY, Filter.ANY, Filter.ANY};
     private final SharedPreferences filterPrefs;
     /**
-     * A filtered row's titles (by key, "movie" or "tv"), in Trakt's order: its cards are these, as they're confirmed
-     * (the titles not looked up yet wait in the queue with the others). Empty while Trakt's answer is on its way; absent
-     * without a filter.
+     * A row's own titles by key, in their order: a filtered Movies or Shows row's (Trakt's order for the filter), and the
+     * Watchlist row's. Its cards are these, as they're confirmed (the titles not looked up yet wait in the queue with
+     * the others). Empty while Trakt's answer is on its way; absent for a row without a filter (Explore, Movies and
+     * Shows show the recommendations: Pick.rec) and for the Watchlist until Trakt answers.
      */
-    private final Map<String, List<String>> filtered = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, List<String>> rowTitles = new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * The person's Trakt watchlist (keys: a pick's menu says Add or Remove), and the shows they watch with episodes out
+     * that they haven't seen (key → how many: the card says so). Replaced whole, never changed in place.
+     */
+    private volatile Set<String> watchlist = new HashSet<>();
+    private volatile Map<String, Integer> newEpisodes = new HashMap<>();
+    private volatile boolean watchLoading;
+    private volatile long watchAt;
+    /** Trakt's watchlist and progress, apart from `io` (~20 requests): the cards' images don't wait for them. */
+    private final ExecutorService watchIo = Executors.newSingleThreadExecutor();
+    private static final long WATCH_EVERY = 30 * 60_000L;
     /** Titles Filmix doesn't have (or with no app on the TV), so a filter that brings them back doesn't ask again. */
     private final Set<String> missing = java.util.concurrent.ConcurrentHashMap.newKeySet();
     /** Per row: a new filter starts a new generation, and the lookups and answers of the one before are dropped. */
-    private final int[] generation = new int[3];
-    private final long[] filterTriedAt = new long[3];
+    private final int[] generation = new int[4];
+    private final long[] filterTriedAt = new long[4];
 
     private Recs(Context c) {
         context = c;
@@ -280,15 +296,29 @@ final class Recs {
             listAt = cache.getLong("listAt", 0);
             listLanguage = cache.getString("language", cache.getBoolean("english", false) ? "en" : "pt");
             keyStamp = cache.getLong("keyStamp", 0);
-            // A filtered row's titles, if they were fetched for the filter it has now.
-            JSONObject rows = new JSONObject(cache.getString("filtered", "{}"));
-            for (String kind : new String[] {"movie", "tv"}) {
+            JSONObject watch = new JSONObject(cache.getString("watch", "{}"));
+            Set<String> listed = new HashSet<>();
+            JSONArray l = watch.optJSONArray("listed");
+            for (int i = 0; l != null && i < l.length(); i++) listed.add(l.optString(i));
+            watchlist = listed;
+            Map<String, Integer> fresh = new HashMap<>();
+            JSONObject n = watch.optJSONObject("new");
+            for (java.util.Iterator<String> it = n == null ? null : n.keys(); it != null && it.hasNext(); ) {
+                String key = it.next();
+                fresh.put(key, n.optInt(key));
+            }
+            newEpisodes = fresh;
+            watchAt = watch.optLong("at");
+            // A filtered row's titles, if they were fetched for the filter it has now; the watchlist's.
+            JSONObject rows = new JSONObject(cache.getString("rows", "{}"));
+            for (String kind : new String[] {"movie", "tv", WATCHLIST}) {
                 JSONObject o = rows.optJSONObject(kind);
-                if (o == null || filters[row(kind)].none() || !o.optString("filter").equals(filters[row(kind)].saved())) continue;
+                if (o == null || (!kind.equals(WATCHLIST) && (filters[row(kind)].none()
+                        || !o.optString("filter").equals(filters[row(kind)].saved())))) continue;
                 List<String> keys = new ArrayList<>();
                 JSONArray a = o.optJSONArray("keys");
                 for (int i = 0; a != null && i < a.length(); i++) keys.add(a.optString(i));
-                filtered.put(kind, keys);
+                rowTitles.put(kind, keys);
             }
         } catch (Exception ignored) {
         }
@@ -358,13 +388,18 @@ final class Recs {
         return list;
     }
 
-    /** The confirmed titles a row draws from: all of them in order, or a filtered row's in Trakt's order for it. */
+    /**
+     * The confirmed titles a row draws from: the recommendations in order, or the row's own (a filtered row's, the
+     * watchlist's) in their order.
+     */
     private List<Pick> order(String kind) {
         List<Pick> all = picks;
-        List<String> keys = kind == null ? null : filtered.get(kind);
+        List<String> keys = kind == null ? null : rowTitles.get(kind);
         if (keys == null) {
-            if (kind != null && !filters[row(kind)].none()) return new ArrayList<>();   // its titles aren't in yet
-            return all;
+            List<Pick> out = new ArrayList<>();
+            if (ownTitles(kind)) return out;   // its titles aren't in yet
+            for (Pick p : all) if (p.rec) out.add(p);
+            return out;
         }
         Map<String, Pick> byKey = new HashMap<>();
         for (Pick p : all) byKey.put(key(p), p);
@@ -376,9 +411,114 @@ final class Recs {
         return out;
     }
 
-    /** The row's filter (Explore: none). */
+    /** The row shows titles of its own (a filter's, or the watchlist), not the recommendations. */
+    private boolean ownTitles(String kind) {
+        return kind != null && (kind.equals(WATCHLIST) || !filters[row(kind)].none());
+    }
+
+    /** In the row: its own titles, or a recommendation of its kind. */
+    private static boolean inRow(Pick p, String kind, List<String> keys) {
+        return keys != null ? keys.contains(key(p)) : p.rec && (kind == null || kind.equals(p.kind));
+    }
+
+    /** The row's filter (Explore and Watchlist: none). */
     Filter filter(String kind) {
         return filters[row(kind)];
+    }
+
+    /** On the person's Trakt watchlist (as far as this TV knows). */
+    boolean watchlisted(Pick p) {
+        return watchlist.contains(key(p));
+    }
+
+    /** A show's aired episodes the person hasn't seen, when some came out since they last watched it; else 0. */
+    int newEpisodes(Pick p) {
+        Integer n = p == null ? null : newEpisodes.get(key(p));
+        return n == null ? 0 : n;
+    }
+
+    /**
+     * Main thread: on the watchlist or off it, here at once (Trakt is asked apart): the Watchlist row gets it after its
+     * shows with new episodes, or loses it.
+     */
+    void setWatchlisted(Pick p, boolean on) {
+        String k = key(p);
+        Set<String> listed = new HashSet<>(watchlist);
+        if (on ? !listed.add(k) : !listed.remove(k)) return;
+        watchlist = listed;
+        List<String> keys = rowTitles.get(WATCHLIST);
+        List<String> row = keys == null ? new ArrayList<>() : new ArrayList<>(keys);
+        row.remove(k);
+        if (on) {
+            int at = 0;
+            while (at < row.size() && newEpisodes.containsKey(row.get(at))) at++;
+            row.add(at, k);
+        } else if (newEpisodes.containsKey(k)) {
+            row.add(0, k);   // its new episodes keep it there
+        }
+        rowTitles.put(WATCHLIST, row);
+        notifyListeners();
+        io.execute(this::save);
+    }
+
+    /** Main thread: marked watched from here, a show has no new episodes left (until Trakt says otherwise). */
+    void seen(Pick p) {
+        if (!newEpisodes.containsKey(key(p))) return;
+        Map<String, Integer> fresh = new HashMap<>(newEpisodes);
+        fresh.remove(key(p));
+        newEpisodes = fresh;
+        notifyListeners();
+        io.execute(this::save);
+    }
+
+    /** Main thread: the Watchlist row from Trakt again (its shows with new episodes, then the watchlist), apart from io. */
+    private void loadWatchlist() {
+        if (watchLoading || !Trakt.hasOAuth()) return;
+        watchLoading = true;
+        watchAt = System.currentTimeMillis();
+        notifyListeners();
+        watchIo.execute(() -> {
+            watchRow(null);
+            main.post(() -> {
+                watchLoading = false;
+                refill(WATCHLIST);
+                notifyListeners();
+                io.execute(this::save);
+            });
+        });
+    }
+
+    /**
+     * The Watchlist row's titles from Trakt: the shows with episodes out since the person last watched (newest first),
+     * then their watchlist (latest added first). The ones not known yet go to the queue (or, while the list is being
+     * made, into `candidates`). If Trakt can't be asked, the row keeps what it had.
+     */
+    private void watchRow(List<Pick> candidates) {
+        if (!Trakt.hasOAuth()) return;
+        try {
+            List<Trakt.Unwatched> fresh = Trakt.newEpisodes(System.currentTimeMillis());
+            List<Trakt.Item> listed = Trakt.watchlist();
+            List<Pick> found = new ArrayList<>();
+            Map<String, Integer> counts = new HashMap<>();
+            Set<String> keys = new HashSet<>();
+            for (Trakt.Unwatched u : fresh) {
+                Pick pick = pickFromTrakt(u.show, "tv");
+                counts.put(key(pick), u.episodes);
+                found.add(pick);
+            }
+            for (Trakt.Item item : listed) {
+                Pick pick = pickFromTrakt(item, item.type.equals("show") ? "tv" : "movie");
+                keys.add(key(pick));
+                found.add(pick);
+            }
+            List<String> row = enqueue(found, candidates);
+            watchlist = keys;
+            newEpisodes = counts;
+            rowTitles.put(WATCHLIST, row);
+            AppLog.w("Trakt watchlist: " + listed.size() + " titles, " + fresh.size() + " shows with new episodes");
+        } catch (IOException e) {
+            AppLog.w("Trakt watchlist: " + e.getMessage());
+        }
     }
 
     /** Filters only come with Trakt's own recommendations (signed in on the TV, or built in). */
@@ -395,14 +535,14 @@ final class Recs {
         int r = row(kind);
         Filter before = filters[r];
         if (kind == null || f.equals(before)) return;
-        List<String> keysBefore = filtered.get(kind);
+        List<String> keysBefore = rowTitles.get(kind);
         filters[r] = f;
         filterPrefs.edit().putString(kind, f.saved()).apply();
         shown[r] = FIRST;
         if (f.none()) {
             generation[r]++;
             loadingMore[r] = false;
-            filtered.remove(kind);
+            rowTitles.remove(kind);
             refill(kind);
             notifyListeners();
             io.execute(this::save);
@@ -411,7 +551,7 @@ final class Recs {
         loadFilter(kind, () -> {
             filters[r] = before;
             filterPrefs.edit().putString(kind, before.saved()).apply();
-            if (keysBefore != null) filtered.put(kind, keysBefore);
+            if (keysBefore != null) rowTitles.put(kind, keysBefore);
             failed.run();
         });
     }
@@ -423,7 +563,7 @@ final class Recs {
     private void loadFilter(String kind, Runnable failed) {
         int r = row(kind), gen = ++generation[r];
         Filter f = filters[r];
-        filtered.put(kind, new ArrayList<>());
+        rowTitles.put(kind, new ArrayList<>());
         loadingMore[r] = true;
         filterTriedAt[r] = System.currentTimeMillis();
         notifyListeners();
@@ -441,10 +581,10 @@ final class Recs {
                 loadingMore[r] = false;
                 if (found == null) {
                     generation[r]++;
-                    filtered.remove(kind);
+                    rowTitles.remove(kind);
                     failed.run();
                 } else {
-                    filtered.put(kind, found);
+                    rowTitles.put(kind, found);
                 }
                 refill(kind);
                 notifyListeners();
@@ -464,33 +604,46 @@ final class Recs {
      */
     private List<String> filteredKeys(String kind, Filter f, List<Pick> candidates) throws IOException {
         List<Trakt.Item> items = Trakt.recommendations(kind.equals("movie") ? "movies" : "shows", f.query(kind), 100);
+        List<Pick> found = new ArrayList<>();
+        for (Trakt.Item item : items) found.add(pickFromTrakt(item, kind));
+        List<String> keys = enqueue(found, candidates);
+        AppLog.w("Trakt filtered " + kind + " " + f.saved() + ": " + keys.size() + " titles");
+        return keys;
+    }
+
+    /**
+     * A row's own titles: their keys in order, without the ones Filmix doesn't have or repeats; the ones not known yet
+     * go to the queue, or into `candidates` while the list is being made (then only the new list counts as known: the
+     * titles of the one it replaces are looked up again with the others).
+     */
+    private List<String> enqueue(List<Pick> found, List<Pick> candidates) {
         Set<String> known = new HashSet<>();
-        for (Pick p : picks) known.add(key(p));
+        if (candidates == null) for (Pick p : picks) known.add(key(p));
         List<String> keys = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
         synchronized (queue) {
-            for (Pick p : queue) known.add(key(p));
-            if (candidates != null) for (Pick p : candidates) known.add(key(p));
-            for (Trakt.Item item : items) {
-                Pick p = pickFromTrakt(item, kind);
+            if (candidates == null) for (Pick p : queue) known.add(key(p));
+            else for (Pick p : candidates) known.add(key(p));
+            for (Pick p : found) {
                 String k = key(p);
-                if (missing.contains(k)) continue;
+                if (missing.contains(k) || !seen.add(k)) continue;
                 keys.add(k);
                 if (!known.add(k)) continue;
                 if (candidates != null) candidates.add(p);
                 else queue.add(p);
             }
         }
-        AppLog.w("Trakt filtered " + kind + " " + f.saved() + ": " + keys.size() + " titles");
         return keys;
     }
 
     private boolean visible(Pick p, String kind, Map<String, Boolean> have) {
-        return (!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(p.kind)) && !hidden.contains(key(p))
+        return (!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(WATCHLIST) || kind.equals(p.kind))
+                && (WATCHLIST.equals(kind) || !hidden.contains(key(p)))
                 && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)));   // app missing: skip
     }
 
     private static int row(String kind) {
-        return kind == null ? 0 : kind.equals("movie") ? 1 : 2;
+        return kind == null ? 0 : kind.equals("movie") ? 1 : kind.equals("tv") ? 2 : 3;
     }
 
     /**
@@ -516,7 +669,7 @@ final class Recs {
         synchronized (queue) {
             for (int i = queue.size() - 1; i >= 0; i--) if (key(queue.get(i)).equals(key(p))) queue.remove(i);
         }
-        for (String kind : new String[] {null, "movie", "tv"}) refill(kind);
+        for (String kind : new String[] {null, "movie", "tv", WATCHLIST}) refill(kind);
         notifyListeners();
         return true;
     }
@@ -540,7 +693,7 @@ final class Recs {
 
     /** The row's next titles are being looked up (its last cards are still empty). */
     boolean loading(String kind) {
-        return loadingMore[row(kind)];
+        return loadingMore[row(kind)] || (WATCHLIST.equals(kind) && watchLoading && !rowTitles.containsKey(WATCHLIST));
     }
 
     private int count(String kind) {
@@ -561,11 +714,11 @@ final class Recs {
      * in Trakt's order for it.
      */
     private Pick next(List<Pick> list, String kind, boolean take) {
-        List<String> keys = kind == null ? null : filtered.get(kind);
-        if (keys == null && kind != null && !filters[row(kind)].none()) return null;   // its titles aren't in yet
+        List<String> keys = kind == null ? null : rowTitles.get(kind);
+        if (keys == null && ownTitles(kind)) return null;   // its titles aren't in yet
         int at = -1;
         if (keys == null) {
-            for (int i = 0; i < list.size() && at < 0; i++) if (kind == null || kind.equals(list.get(i).kind)) at = i;
+            for (int i = 0; i < list.size() && at < 0; i++) if (inRow(list.get(i), kind, null)) at = i;
         } else {
             Map<String, Integer> index = new HashMap<>();
             for (int i = 0; i < list.size(); i++) index.put(key(list.get(i)), i);
@@ -628,11 +781,12 @@ final class Recs {
         });
     }
 
-    /** How many of `list` the row would show (a filtered row: its own titles). */
+    /** How many of `list` the row would show (a filtered row, the watchlist: its own titles). */
     private int count(List<Pick> list, String kind) {
-        List<String> keys = kind == null ? null : filtered.get(kind);
+        List<String> keys = kind == null ? null : rowTitles.get(kind);
+        if (keys == null && ownTitles(kind)) return 0;
         int n = 0;
-        for (Pick p : list) if ((kind == null || kind.equals(p.kind)) && (keys == null || keys.contains(key(p)))) n++;
+        for (Pick p : list) if (inRow(p, kind, keys)) n++;
         return n;
     }
 
@@ -645,7 +799,7 @@ final class Recs {
             Filter f = filters[row(kind)];
             if (f.none()) continue;
             try {
-                filtered.put(kind, filteredKeys(kind, f, candidates));
+                rowTitles.put(kind, filteredKeys(kind, f, candidates));
             } catch (IOException e) {
                 AppLog.w("Trakt filtered " + kind + ": " + e.getMessage());
             }
@@ -709,10 +863,14 @@ final class Recs {
     void refreshIfStale() {
         if (!hasKey(context) || fetching) return;
         long now = System.currentTimeMillis();
+        long sinceWatch = now - watchAt;
+        if (!picks.isEmpty() && (sinceWatch < 0 || sinceWatch > (rowTitles.containsKey(WATCHLIST) ? WATCH_EVERY : 60_000L))) {
+            loadWatchlist();
+        }
         for (String kind : new String[] {"movie", "tv"}) {
             int r = row(kind);
             long since = now - filterTriedAt[r];
-            if (!filters[r].none() && !filtered.containsKey(kind) && !picks.isEmpty() && (since < 0 || since > 60_000L)) {
+            if (!filters[r].none() && !rowTitles.containsKey(kind) && !picks.isEmpty() && (since < 0 || since > 60_000L)) {
                 loadFilter(kind, () -> {});
             }
         }
@@ -836,7 +994,7 @@ final class Recs {
     List<Pick> wanted() {
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (String kind : new String[] {null, "movie", "tv"}) {
+        for (String kind : new String[] {null, "movie", "tv", WATCHLIST}) {
             for (Pick p : now(kind)) if (seen.add(key(p))) out.add(p);
         }
         return out;
@@ -931,12 +1089,15 @@ final class Recs {
         alternate(list, seen, hotMovies, hotShows, 24);
         alternate(list, seen, newMovies, newShows, 24);
         if (list.isEmpty()) throw new IOException("TMDB returned no recommendations");
+        for (Pick pick : list) pick.rec = true;
         picks = list;
         synchronized (queue) {
             queue.clear();   // every title here is already checked: → past a row's end only shows more of them
         }
         List<Pick> extra = new ArrayList<>();
-        filterRows(extra);   // a filtered row's own titles: looked up (details, app) when it gets to them
+        filterRows(extra);   // a filtered row's and the watchlist's own titles: looked up (details, app) when they're due
+        watchAt = System.currentTimeMillis();
+        watchRow(extra);
         synchronized (queue) {
             queue.addAll(extra);
         }
@@ -992,7 +1153,6 @@ final class Recs {
         // All of Trakt's recommendations (50 movies, 50 shows) are looked up in Filmix: none is cut before that.
         alternate(candidates, seen, movies, shows, 100);
         missing.clear();
-        filterRows(candidates);
 
         if (candidates.size() < 40) {
             String common = "&language=" + lang() + "&include_adult=false&sort_by=popularity.desc"
@@ -1006,12 +1166,16 @@ final class Recs {
             for (int i = 0; i < recentShows.length(); i++) add(discShows, recentShows.getJSONObject(i), "tv");
             alternate(candidates, seen, discMovies, discShows, 60);
         }
+        for (Pick pick : candidates) pick.rec = true;
+        filterRows(candidates);
+        watchAt = System.currentTimeMillis();
+        watchRow(candidates);
 
         // Only what the rows show at first is looked up now (Explore's four, then Movies' and Shows'); the rest waits in
         // the queue until the focus on a row's last card asks for it.
         List<Pick> rest = new ArrayList<>(candidates), confirmed = new ArrayList<>();
         int checked = 0;
-        for (String kind : new String[] {null, "movie", "tv"}) {
+        for (String kind : new String[] {null, "movie", "tv", WATCHLIST}) {
             while (count(confirmed, kind) < FIRST) {
                 Pick next = next(rest, kind, true);
                 if (next == null) break;
@@ -1545,13 +1709,15 @@ final class Recs {
                     .putString("recommendationsApp", Config.RECOMMENDATIONS_APP)
                     .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION);
             JSONObject rows = new JSONObject();
-            for (String kind : new String[] {"movie", "tv"}) {
-                List<String> keys = filtered.get(kind);
-                if (keys != null && !keys.isEmpty()) {
+            for (String kind : new String[] {"movie", "tv", WATCHLIST}) {
+                List<String> keys = rowTitles.get(kind);
+                if (keys != null && (kind.equals(WATCHLIST) || !keys.isEmpty())) {
                     rows.put(kind, new JSONObject().put("filter", filters[row(kind)].saved()).put("keys", new JSONArray(keys)));
                 }
             }
-            e.putString("filtered", rows.toString());
+            e.putString("rows", rows.toString());
+            e.putString("watch", new JSONObject().put("listed", new JSONArray(watchlist))
+                    .put("new", new JSONObject(newEpisodes)).put("at", watchAt).toString());
             // Watchmode links of titles no longer in the list go (the refused-key mark stays).
             Set<String> keep = new HashSet<>();
             for (Pick p : picks) keep.add(linkKey(p));
@@ -1567,7 +1733,8 @@ final class Recs {
                 .put("rating", (double) p.rating).put("backdrop", p.backdrop == null ? "" : p.backdrop)
                 .put("logo", p.logo == null ? "" : p.logo)
                 .put("link", p.link == null ? "" : p.link).put("meta", p.meta)
-                .put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg).put("detailed", p.detailed);
+                .put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg).put("detailed", p.detailed)
+                .put("rec", p.rec);
     }
 
     private static List<Pick> parse(JSONArray a) {
@@ -1589,6 +1756,7 @@ final class Recs {
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.detailed = o.optBoolean("detailed");
+            p.rec = o.optBoolean("rec");
             out.add(p);
         }
         return out;

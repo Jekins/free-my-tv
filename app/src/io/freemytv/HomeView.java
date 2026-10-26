@@ -52,10 +52,11 @@ import java.util.function.Consumer;
 
 /**
  * The home screen, styled after the Apple TV app with the macOS 27 glass:
- *  - at the top left, the tabs (Explore, Movies, Shows); on their line at the top right, icon-only glass buttons
+ *  - at the top left, the tabs (Explore, Movies, Shows, Watchlist); on their line at the top right, icon-only glass buttons
  *    (Live TV, HDMI Inputs, Settings), with the focused one's name below it, and before them the small crypto quotes
  *    (logo + price);
- *  - three cards with the titles recommended for right now in the selected tab (Recs, from TMDB); the background is
+ *  - a row of cards for the selected tab: the titles recommended for right now (Recs, from Trakt or TMDB), or the
+ *    Trakt watchlist with the shows that have new episodes (a badge says how many); the background is
  *    the first card's photo, heavily blurred and almost white (Backdrop); without picks, one of your own photos
  *    (Photos) the same way, or else a light gradient;
  *  - at the bottom, the glass shelf with the apps (icons in each brand's color, like the tvOS Dock; the focused one
@@ -114,7 +115,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final int L_INK = 0xFF1D1D1F, L_DIM = 0xFF6E6E73, L_FAINT = 0xFF8E8E93;
     private static String[] tabs;
     private static int tabsGeneration = -1;
-    private static final String[] TAB_KIND = {null, "movie", "tv"};
+    private static final String[] TAB_KIND = {null, "movie", "tv", Recs.WATCHLIST};
+    private static final int TABS = TAB_KIND.length;
     private static final int Z_TOP = 4, Z_CARDS = 5;
 
     private final Activity activity;
@@ -153,13 +155,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean nightPair;          // the glass holds both photos (day and night), blended by `night`
     private Shader nightGradient;
 
-    // At the top: tabs (0 to 2) and icon-only buttons (3 to 5); the three cards
+    // At the top: tabs (0 to TABS - 1) and icon-only buttons (TABS on); the row's cards
     private int tab, topIndex, cardIndex;
     private int widgetIndex;    // with TalkBack on, the drawer's weather (0) or quotes (1) card can take the focus
     private List<Recs.Pick> cards = new ArrayList<>();
-    // The three tabs, then the round buttons at the top right (up to HomeApps.MAX_TOP).
-    private final Spring[] topFocus = new Spring[3 + HomeApps.MAX_TOP];
-    private final RectF[] topRects = new RectF[3 + HomeApps.MAX_TOP];
+    // The tabs, then the round buttons at the top right (up to HomeApps.MAX_TOP).
+    private final Spring[] topFocus = new Spring[TABS + HomeApps.MAX_TOP];
+    private final RectF[] topRects = new RectF[TABS + HomeApps.MAX_TOP];
     // The row of picks, as on Apple TV: the focused card is wide and the others tall, each width a spring, and the row
     // scrolls only when the wide card wouldn't fit. The focus on the last card asks Recs for more; empty cards (slots) hold
     // their places, softly pulsing, until their titles are confirmed. The focused card stretches past its size once and
@@ -331,9 +333,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** A card's words, cut to fit once (never while drawing): its title at both widths and the wide card's details. */
     private static final class CardText {
-        String key = "", tallTitle = "", wideTitle = "", meta = "", rating = "";
+        String key = "", tallTitle = "", wideTitle = "", meta = "", rating = "", badge = "";
         int generation = -1;
         float width, ratingW;   // ratingW: the star, the number and the space after them (0 without a rating)
+        float badgeW;           // the new episodes' words, at most a tall card's room
     }
 
     /** What the hero shows: a recommendation or, without any, the date, the time and the weather. */
@@ -588,10 +591,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void setLightButtons(List<HomeApps.Item> list) {
         lightButtons.clear();
         lightButtons.addAll(list);
-        if (zone == Z_TOP && topIndex >= 3 + lightButtons.size()) {
-            topIndex = 2 + lightButtons.size();
-            if (topIndex < 3 && !picksOn()) zone = Z_SHELF;   // without the picks the tabs can't hold focus
-            else if (topIndex < 3) selectTab(topIndex);
+        if (zone == Z_TOP && topIndex >= TABS + lightButtons.size()) {
+            topIndex = TABS - 1 + lightButtons.size();
+            if (topIndex < TABS && !picksOn()) zone = Z_SHELF;   // without the picks the tabs can't hold focus
+            else if (topIndex < TABS) selectTab(topIndex);
             retarget(true);
         }
         layoutLight();
@@ -601,7 +604,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** The tab names, made again only when the language changes (they are drawn on every frame). */
     private static String[] tabs() {
         if (tabsGeneration != Ui.generation) {
-            tabs = new String[] {Ui.tr("Explore"), Ui.tr("Movies"), Ui.tr("Shows")};
+            tabs = new String[] {Ui.tr("Explore"), Ui.tr("Movies"), Ui.tr("Shows"), Ui.tr("tab|Watchlist")};
             tabsGeneration = Ui.generation;
         }
         return tabs;
@@ -718,7 +721,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         updateClock();
         Symbols.warm(getContext(), "bell", 26 * k);
         Symbols.warm(getContext(), "bedtime", 21 * k);   // the sleep timer's "Off in", at lQuote's size
-        for (String s : new String[] {"play", "check", "hide", "chevron_left", "chevron_right"}) {
+        for (String s : new String[] {"play", "check", "hide", "bookmark_add", "bookmark_remove", "chevron_left", "chevron_right"}) {
             Symbols.warm(getContext(), s, 30 * k);   // a pick's menu, the filters
         }
         layoutShelf();
@@ -758,6 +761,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         menuValue = Ui.text(Ui.semibold, 30 * k, L_INK);
         lEmpty = Ui.text(Ui.medium, 30 * k, L_DIM);
         lEmpty.setTextAlign(Paint.Align.CENTER);
+        lBadge = Ui.text(Ui.semibold, 21 * k, L_INK);
         lQuote = Ui.numbers(Ui.regular, 21 * k, L_FAINT);
         lTip = Ui.text(Ui.semibold, 25 * k, L_INK);
         lTip.setTextAlign(Paint.Align.CENTER);
@@ -830,7 +834,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // The menu has faded: a title hidden from it leaves the row, and the row slides back.
         if (!menuOpen && menuWarm == 0 && menu.value <= 0.002f) {
             if (hideAfter != null) recs.hide(hideAfter);
-            hideAfter = null;
+            if (unlistAfter != null) recs.setWatchlisted(unlistAfter, false);
+            hideAfter = unlistAfter = null;
             menuShift.target = 0;
         }
         // The row: lift, widths, scroll, its shift for the menu and the bump at its end; empty cards pulse while their
@@ -1564,7 +1569,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             sleepMeasured = sleepText;
             sleepWidth = sleepText.isEmpty() ? 0 : lQuote.measureText(sleepText) + lQuote.getTextSize() * 1.4f + 28 * k;
         }
-        float right = (lightButtons.isEmpty() ? CONTENT_R * k : topRects[3].left - 28 * k) - sleepWidth;
+        float right = (lightButtons.isEmpty() ? CONTENT_R * k : topRects[TABS].left - 28 * k) - sleepWidth;
         applyTone();
         Paint text = clock ? lClockQuote : lQuote;
         // What an app is playing takes the quotes' place while it plays.
@@ -2661,11 +2666,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             it = drawerItems.get(drawerIndex);
             r = drawerRects[drawerIndex];
         } else if (zone == Z_TOP) {
-            if (topIndex < 3) {
+            if (topIndex < TABS) {
                 selectTab(topIndex);
                 return;
             }
-            it = lightButtons.get(topIndex - 3);
+            it = lightButtons.get(topIndex - TABS);
             r = topRects[topIndex];
         } else if (zone == Z_CARDS) {
             Recs.Pick p = cardIndex < cards.size() ? cards.get(cardIndex) : null;
@@ -2763,7 +2768,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     // MARK: - A pick's menu (OK held on its card): its trailer on YouTube; watched, rated or not recommended on Trakt
 
-    private static final int M_TRAILER = 0, M_WATCHED = 1, M_HIDE = 2;
+    // The items (menuList holds the ones this menu has, in order: on the Watchlist tab, no Don't recommend).
+    private static final int M_TRAILER = 0, M_WATCHED = 1, M_WATCHLIST = 2, M_HIDE = 3;
+    private final int[] menuList = new int[4];
+    private int menuCount;
     // 658 wide: beside the wide card at the row's left end, it ends at the content's right edge (CONTENT_R).
     private static final float MENU_W = 658, MENU_ITEM_H = 88, MENU_PAD = 14, MENU_GAP = 6;
     /** A rating goes to Trakt this long after the last star pressed (or as the menu closes): one request, not one a press. */
@@ -2776,6 +2784,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Spring menuShift = new Spring(0.16f, 1, 0);
     private boolean menuWaitsRow;   // the screen is copied, and the menu shown, once the row stops there
     private Recs.Pick hideAfter;    // "Don't recommend": it leaves the row once the menu has faded
+    private Recs.Pick unlistAfter;  // off the watchlist from the Watchlist tab: it leaves that row once the menu has faded
     // The same menu as a tab's filters (OK held on Movies or Shows): centered, nothing moves behind it. Its rows change
     // `filterDraft` (indexes into Recs.Filter's lists: year, rating, genre, and the status for shows), which the row
     // takes as the menu closes.
@@ -2793,11 +2802,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int[] shotPx;
     private Scene menuScene;    // the panel's glass, over that copy
     private final Paint shotPaint = new Paint(Paint.FILTER_BITMAP_FLAG), starLine = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private Paint menuText, menuHint, menuTitle, menuValue, lEmpty;
+    private Paint menuText, menuHint, menuTitle, menuValue, lEmpty, lBadge;
     private final RectF menuRect = new RectF();   // the panel at rest, on screen
     private final Rect menuBounds = new Rect();   // its two layers: the panel and room for its shadow
     // Trakt, per title (Recs.key): marked watched or hidden from here; the stars chosen; the stars sent (or on their way)
-    private final Set<String> watched = new HashSet<>(), hiding = new HashSet<>();
+    private final Set<String> watched = new HashSet<>(), hiding = new HashSet<>(), listing = new HashSet<>();
     private final Map<String, Integer> rated = new HashMap<>(), ratedSent = new HashMap<>();
     private Recs.Pick ratePick;
     private final Runnable rateNow = this::sendRating;
@@ -2811,7 +2820,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private int menuItems() {
         if (menuFilters) return "tv".equals(filterKind) ? 5 : 4;   // the rows, then Reset
-        return Trakt.hasKey() ? 3 : 1;
+        return menuCount;
+    }
+
+    /** The pick menu's item at `i` (M_TRAILER…). */
+    private int menuItem(int i) {
+        return menuList[Math.max(0, Math.min(menuCount - 1, i))];
     }
 
     /** The second item shows the stars once the title is marked watched (or rated) from here. */
@@ -2830,7 +2844,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         menuFilters = false;
         menuPick = cards.get(cardIndex);
         menuCard = cardIndex;
-        menuIndex = M_TRAILER;
+        menuIndex = 0;
+        menuCount = 0;
+        menuList[menuCount++] = M_TRAILER;
+        if (Trakt.hasKey()) {
+            menuList[menuCount++] = M_WATCHED;
+            menuList[menuCount++] = M_WATCHLIST;
+            if (!Recs.WATCHLIST.equals(TAB_KIND[tab])) menuList[menuCount++] = M_HIDE;
+        }
         menuSignedIn = Trakt.hasOAuth();
         Integer r = rated.get(Recs.key(menuPick));
         starIndex = r == null ? 5 : r - 1;
@@ -2851,7 +2872,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private boolean canFilter() {
-        return !sheetOpen && zone == Z_TOP && topIndex < 3 && picksOn();
+        return !sheetOpen && zone == Z_TOP && topIndex < TABS && picksOn();
     }
 
     /** The tab's filters, over the screen blurred as behind a pick's menu (Explore has none: a toast says where they are). */
@@ -2861,7 +2882,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (menuOpen || !canFilter()) return;
         okHeld = true;
         String kind = TAB_KIND[topIndex];
-        if (kind == null) {
+        if (kind == null || kind.equals(Recs.WATCHLIST)) {
             showToast(Ui.tr("Filters are on the Movies and Shows tabs."));
             return;
         }
@@ -3131,7 +3152,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             menu.snap(0);
             menuShift.snap(0);
             if (hideAfter != null) recs.hide(hideAfter);
-            hideAfter = null;
+            if (unlistAfter != null) recs.setWatchlisted(unlistAfter, false);
+            hideAfter = unlistAfter = null;
         }
         menuDirty = true;
         wake();
@@ -3139,7 +3161,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private void aimMenu(boolean snap) {
         aim(menuFocus, menuIndex, snap);
-        aim(starFocus, menuIndex == M_WATCHED && menuPick != null && stars(menuPick) ? starIndex : -1, snap);
+        aim(starFocus, !menuFilters && menuItem(menuIndex) == M_WATCHED && menuPick != null && stars(menuPick) ? starIndex : -1, snap);
         menuDirty = true;
     }
 
@@ -3148,8 +3170,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (i == menuItems() - 1) return Ui.tr("Reset filters");
             return Ui.trf("filter|{name}: {value}", "name", filterName(i), "value", filterValue(i, filterDraft[i]));
         }
-        if (i == M_TRAILER) return Ui.tr("Watch trailer");
-        if (i == M_HIDE) return Ui.tr("Don't recommend");
+        int item = menuItem(i);
+        if (item == M_TRAILER) return Ui.tr("Watch trailer");
+        if (item == M_HIDE) return Ui.tr("Don't recommend");
+        if (item == M_WATCHLIST) {
+            return menuPick != null && recs.watchlisted(menuPick) ? Ui.tr("Remove from Watchlist") : Ui.tr("Add to Watchlist");
+        }
         return menuPick != null && stars(menuPick) ? Ui.tr("Rate it on Trakt") : Ui.tr("Watched");
     }
 
@@ -3171,7 +3197,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_DPAD_RIGHT:
-                if (down && menuIndex == M_WATCHED && stars(menuPick)) {
+                if (down && menuItem(menuIndex) == M_WATCHED && stars(menuPick)) {
                     int next = Math.max(0, Math.min(starFocus.length - 1, starIndex + (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1)));
                     if (next != starIndex) {
                         starIndex = next;
@@ -3213,7 +3239,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void menuSelect() {
         Recs.Pick p = menuPick;
         if (p == null) return;
-        if (menuIndex == M_TRAILER) {
+        int item = menuItem(menuIndex);
+        if (item == M_TRAILER) {
             click.open();
             closePickMenu(true);
             openTrailer(p);
@@ -3223,8 +3250,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             showToast(Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."));
             return;
         }
-        if (menuIndex == M_HIDE) {
+        if (item == M_HIDE) {
             hidePick(p);
+            return;
+        }
+        if (item == M_WATCHLIST) {
+            toggleWatchlist(p);
             return;
         }
         String key = Recs.key(p);
@@ -3261,7 +3292,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         LOADER.execute(() -> {
             try {
                 Trakt.markWatched(kind, id);
-                handler.post(() -> showToast(Ui.trf("Marked as watched on Trakt: {title}", "title", title)));
+                handler.post(() -> {
+                    recs.seen(p);
+                    showToast(Ui.trf("Marked as watched on Trakt: {title}", "title", title));
+                });
             } catch (Exception e) {
                 AppLog.w("Trakt watched: " + e.getMessage());
                 handler.post(() -> {
@@ -3330,6 +3364,47 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     if (hideAfter == p) hideAfter = null;
                     recs.unhide(p);
                     showToast(Ui.tr("Trakt didn't answer. Try again in a moment."));
+                });
+            }
+        });
+    }
+
+    /**
+     * On the person's Trakt watchlist, or off it: here at once (the item says Remove or Add), then Trakt (one request at
+     * a time per title); if Trakt refuses, it goes back, with a toast (a full watchlist says so). Taken off from the
+     * Watchlist tab, the menu closes and the card leaves the row once it has faded.
+     */
+    private void toggleWatchlist(Recs.Pick p) {
+        String key = Recs.key(p), kind = p.kind, title = p.title;
+        if (!listing.add(key)) return;
+        int id = p.id;
+        boolean add = !recs.watchlisted(p);
+        click.open();
+        if (!add && Recs.WATCHLIST.equals(TAB_KIND[tab])) {
+            unlistAfter = p;
+            closePickMenu(false);
+        } else {
+            recs.setWatchlisted(p, add);
+            menuDirty = true;
+            announceForAccessibility(menuLabel(menuIndex));
+        }
+        LOADER.execute(() -> {
+            try {
+                Trakt.watchlist(kind, id, add);
+                handler.post(() -> {
+                    listing.remove(key);
+                    showToast(add ? Ui.trf("Added to your Trakt watchlist: {title}", "title", title)
+                            : Ui.trf("Removed from your Trakt watchlist: {title}", "title", title));
+                });
+            } catch (Exception e) {
+                AppLog.w("Trakt watchlist: " + e.getMessage());
+                boolean full = e.getMessage() != null && e.getMessage().contains("HTTP 420");
+                handler.post(() -> {
+                    listing.remove(key);
+                    if (unlistAfter == p) unlistAfter = null;
+                    else recs.setWatchlisted(p, !add);
+                    menuDirty = true;
+                    showToast(full ? Ui.tr("Your Trakt watchlist is full.") : Ui.tr("Trakt didn't answer. Try again in a moment."));
                 });
             }
         });
@@ -3434,10 +3509,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 fill.setColor(Ui.alpha(0xFFFFFFFF, f));
                 c.drawRoundRect(cell, ih / 2, ih / 2, fill);
             }
-            int ink = i != M_TRAILER && !menuSignedIn ? tone(L_FAINT, 0xFF8E8E93) : blend(tone(L_INK, WHITE), L_INK, f);
+            int item = menuItem(i);
+            int ink = item != M_TRAILER && !menuSignedIn ? tone(L_FAINT, 0xFF8E8E93) : blend(tone(L_INK, WHITE), L_INK, f);
             float cy = cell.centerY(), textX = cell.left + 84 * k;
-            Symbols.draw(getContext(), c, i == M_TRAILER ? "play" : i == M_WATCHED ? "check" : "hide", cell.left + 46 * k, cy, 30 * k, ink);
-            if (i == M_WATCHED && stars(menuPick)) {
+            String icon = item == M_TRAILER ? "play" : item == M_WATCHED ? "check" : item == M_HIDE ? "hide"
+                    : recs.watchlisted(menuPick) ? "bookmark_remove" : "bookmark_add";
+            Symbols.draw(getContext(), c, icon, cell.left + 46 * k, cy, 30 * k, ink);
+            if (item == M_WATCHED && stars(menuPick)) {
                 drawStars(c, textX, cy, ink);
             } else {
                 menuText.setColor(ink);
@@ -3727,7 +3805,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             for (int i = 0; i < others.size(); i++) out.add(a11yId(GRID, i));
             return;
         }
-        for (int i = picksOn() ? 0 : 3; i < 3 + lightButtons.size(); i++) out.add(a11yId(Z_TOP, i));
+        for (int i = picksOn() ? 0 : TABS; i < TABS + lightButtons.size(); i++) out.add(a11yId(Z_TOP, i));
         for (int i = 0; i < cards.size(); i++) out.add(a11yId(Z_CARDS, i));
         for (int i = shelfFirst; i < Math.min(shelf.size(), shelfFirst + shelfVisible); i++) out.add(a11yId(Z_SHELF, i));
         for (int i = 0; i < drawerItems.size(); i++) out.add(a11yId(Z_DRAWER, i));
@@ -3742,8 +3820,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 if (i >= others.size()) return "";
                 return label(others, i) + ", " + Ui.trf("{i} of {n}", "i", i + 1, "n", others.size());
             case Z_TOP:
-                if (i >= 3) return label(lightButtons, i - 3);
-                return Ui.trf("{name}, tab {i} of {n}", "name", tabs()[i], "i", i + 1, "n", 3);
+                if (i >= TABS) return label(lightButtons, i - TABS);
+                return Ui.trf("{name}, tab {i} of {n}", "name", tabs()[i], "i", i + 1, "n", TABS);
             case Z_CARDS: return i < cards.size() ? pickText(cards.get(i)) : "";
             case Z_SHELF:
                 if (reordering && i == shelfIndex) {
@@ -3775,9 +3853,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 break;
             }
             case Z_TOP:
-                if (i >= 3 + lightButtons.size()) return false;
+                if (i >= TABS + lightButtons.size()) return false;
                 a11yRect.set(topRects[i]);
-                dy = (i < 3 ? heroLayer : status).getTranslationY();
+                dy = (i < TABS ? heroLayer : status).getTranslationY();
                 break;
             case Z_CARDS:
                 if (i >= cards.size()) return false;
@@ -3862,10 +3940,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 widgetIndex = i;
                 break;
             case Z_TOP:
-                if (i >= 3 + lightButtons.size() || (i < 3 && !picksOn())) return;
+                if (i >= TABS + lightButtons.size() || (i < TABS && !picksOn())) return;
                 if (drawerOpen) closeDrawer();
                 topIndex = i;
-                if (i < 3) selectTab(i);
+                if (i < TABS) selectTab(i);
                 break;
             case Z_CARDS:
                 if (i >= cards.size()) return;
@@ -3890,9 +3968,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /** A recommendation: title, details and the app that plays it. */
-    private static String pickText(Recs.Pick p) {
+    private String pickText(Recs.Pick p) {
         if (p == null) return "";
         StringBuilder s = new StringBuilder(p.title == null ? "" : p.title);
+        int fresh = recs.newEpisodes(p);
+        if (fresh > 0) s.append(", ").append(Ui.plural("plural|one:{n} new episode|other:{n} new episodes", fresh));
         if (p.meta != null && !p.meta.isEmpty()) s.append(", ").append(p.meta);
         String app = Recs.serviceName(p);
         if (app != null && !app.isEmpty()) s.append(". App: ").append(app);
@@ -3950,7 +4030,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Text tabs; the focus pill extends 26 px past the text (the first tab's text starts at the margin).
         float pad = 26 * k, tabTop = L_TABBAR_TOP * k, tabBottom = (L_TABBAR_TOP + L_TABBAR_H) * k;
         float x = MARGIN * k - pad;
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < TABS; i++) {
             float tw = Math.max(lTabOn.measureText(tabs()[i]), lTab.measureText(tabs()[i]));
             topRects[i].set(x, tabTop, x + tw + 2 * pad, tabBottom);
             snap(topRects[i]);
@@ -3958,7 +4038,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         float b = L_BUTTON * k, right = CONTENT_R * k, cy = L_BUTTON_CY * k;
         for (int i = lightButtons.size() - 1; i >= 0; i--) {
-            topRects[3 + i].set(right - b, cy - b / 2, right, cy + b / 2);
+            topRects[TABS + i].set(right - b, cy - b / 2, right, cy + b / 2);
             right -= b + L_BUTTON_GAP * k;
         }
         // The row: the wide card spans what two tall ones leave (three cards fill the 5-column grid exactly).
@@ -4093,7 +4173,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void cutText(int i, Recs.Pick p) {
         CardText t = cardWords[i];
         if (t == null) t = cardWords[i] = new CardText();
-        String key = Recs.key(p) + '|' + p.title + '|' + p.meta + '|' + p.rating;
+        int fresh = recs.newEpisodes(p);
+        String key = Recs.key(p) + '|' + p.title + '|' + p.meta + '|' + p.rating + '|' + fresh;
         if (key.equals(t.key) && t.generation == Ui.generation && t.width == wideW) return;
         t.key = key;
         t.generation = Ui.generation;
@@ -4106,6 +4187,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         fitPaint.set(lCardMeta);
         t.ratingW = t.rating.isEmpty() ? 0 : lCardMeta.getTextSize() * 1.1f + fitPaint.measureText(t.rating) + 22 * k;
         t.meta = p.meta == null ? "" : TextUtils.ellipsize(p.meta, fitPaint, wideW - t.ratingW, TextUtils.TruncateAt.END).toString();
+        t.badge = fresh > 0 ? Ui.plural("plural|one:{n} new episode|other:{n} new episodes", fresh) : "";
+        t.badgeW = t.badge.isEmpty() ? 0 : Math.min(lBadge.measureText(t.badge), tallW - 76 * k);
     }
 
     /** The row can't go further that way: it gives a little, then springs back (tvOS). */
@@ -4198,7 +4281,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Text tabs (the selected one in bold, in the main text color); with focus on the tabs, the selected one gets
         // the white pill with a shadow and grows a little (the tvOS focus).
         float focus = Ui.clamp(topFocus[tab].value);
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < TABS; i++) {
             RectF r = topRects[i];
             if (i == tab && focus > 0.01f) {
                 float s = 1 + 0.05f * focus;
@@ -4227,10 +4310,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             }
         }
         String kind = TAB_KIND[tab];
-        if (slots == 0 && kind != null && !recs.filter(kind).none() && !recs.loading(kind)) {
-            c.drawText(Ui.tr("Nothing here with these filters. Hold OK on the tab to change them."), w / 2f,
-                    (L_CARDS_TOP + L_CARD_H / 2) * k + Ui.halfCap(lEmpty), lEmpty);
-        }
+        String empty = slots > 0 || kind == null || recs.loading(kind) ? null
+                : kind.equals(Recs.WATCHLIST) ? (Recs.canFilter() ? Ui.tr("Your Trakt watchlist is empty. Hold OK on a card to add it.")
+                        : Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."))
+                : !recs.filter(kind).none() ? Ui.tr("Nothing here with these filters. Hold OK on the tab to change them.") : null;
+        if (empty != null) c.drawText(empty, w / 2f, (L_CARDS_TOP + L_CARD_H / 2) * k + Ui.halfCap(lEmpty), lEmpty);
         // The row, from each card's width this frame (never under the tall one); x0 is each card's place without the
         // stretch. The card the focus goes to pushes the next one only by what would bring their edges (as drawn, the
         // focused one 5% larger) closer than their gap once settled: so it moves with the stretch, not before. The card
@@ -4354,6 +4438,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         Bitmap logo = shown > 0 ? b.logo : null;
         if (logo != null) drawLogo(c, logo, cx, cy, bw, ch, s, wide, shown);
+        CardText words = p == null ? null : cardWords[i];
+        if (words != null && !words.badge.isEmpty() && shown > 0) drawBadge(c, words, cx, cy, bw, ch, s, shown);
         if (f > 0.01f) {
             int alpha = Math.round(255 * f);
             c.save();
@@ -4407,6 +4493,30 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /**
+     * A show's new episodes, on its card's top left: a white pill with a blue dot and "2 new episodes", in the card's own
+     * transform (it follows the focus's growth and the jelly).
+     */
+    private void drawBadge(Canvas c, CardText t, float cx, float cy, float bw, float ch, float s, float alpha) {
+        float h = 38 * k, pad = 14 * k, dot = 5 * k, inset = 16 * k;
+        c.save();
+        c.translate(cx, cy);
+        c.scale(s, s);
+        float left = -bw / 2 + inset, top = -ch / 2 + inset;
+        tmp.set(left, top, left + pad + 2 * dot + 9 * k + t.badgeW + pad, top + h);
+        fill.setShader(null);
+        fill.setColor(Ui.alpha(0xF2FFFFFF, alpha));
+        c.drawRoundRect(tmp, h / 2, h / 2, fill);
+        fill.setColor(Ui.alpha(0xFF0A84FF, alpha));
+        c.drawCircle(left + pad + dot, top + h / 2, dot, fill);
+        lBadge.setColor(Ui.alpha(L_INK, alpha));
+        c.save();
+        c.clipRect(tmp);
+        c.drawText(t.badge, left + pad + 2 * dot + 9 * k, top + h / 2 + Ui.halfCap(lBadge), lBadge);
+        c.restore();
+        c.restore();
+    }
+
+    /**
      * The title's logo on its card (whose photo darkens toward the bottom: Backdrop.card): on a tall card centered near
      * its bottom (82% of its width × 20% of its height at most), on the wide one at its bottom left (42% × 24%), moving
      * and growing between the two as the card widens. Drawn in the card's own transform, so it follows the focus's growth
@@ -4452,8 +4562,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         applyTone();
         for (int i = 0; i < lightButtons.size(); i++) {
             HomeApps.Item it = lightButtons.get(i);
-            RectF r = topRects[3 + i];
-            float f = Ui.clamp(topFocus[3 + i].value), s = 1 + 0.1f * f, rad = r.width() / 2 * s;
+            RectF r = topRects[TABS + i];
+            float f = Ui.clamp(topFocus[TABS + i].value), s = 1 + 0.1f * f, rad = r.width() / 2 * s;
             cell.set(r.centerX() - rad, r.centerY() - rad, r.centerX() + rad, r.centerY() + rad);
             tmp.set(cell);
             tmp.offset(0, (6 + 8 * f) * k);
@@ -4476,7 +4586,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             }
         }
         if (sleepText.isEmpty()) return;
-        float right = (lightButtons.isEmpty() ? CONTENT_R * k : topRects[3].left) - 28 * k, cy = L_BUTTON_CY * k;
+        float right = (lightButtons.isEmpty() ? CONTENT_R * k : topRects[TABS].left) - 28 * k, cy = L_BUTTON_CY * k;
         float tw = lQuote.measureText(sleepText), size = lQuote.getTextSize();
         c.drawText(sleepText, right - tw, cy + Ui.halfCap(lQuote), lQuote);
         Symbols.draw(getContext(), c, "bedtime", right - tw - size * 0.9f, cy, size, lQuote.getColor());
@@ -4520,14 +4630,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 break;
             case Z_TOP:
                 if (dx != 0) {
-                    int next = Math.max(picksOn() ? 0 : 3, Math.min(2 + lightButtons.size(), topIndex + dx));
+                    int next = Math.max(picksOn() ? 0 : TABS, Math.min(TABS - 1 + lightButtons.size(), topIndex + dx));
                     if (next == topIndex) return true;
                     topIndex = next;
-                    if (topIndex < 3) selectTab(topIndex);   // like Apple TV tabs: focusing a tab selects it
+                    if (topIndex < TABS) selectTab(topIndex);   // like Apple TV tabs: focusing a tab selects it
                 } else if (dy > 0) {
                     zone = slots == 0 ? Z_SHELF : Z_CARDS;   // the row's own card, as from the shelf
-                } else if (topIndex < 3 && !lightButtons.isEmpty()) {
-                    topIndex = 3;   // up from the tabs reaches the corner buttons without walking the row
+                } else if (topIndex < TABS && !lightButtons.isEmpty()) {
+                    topIndex = TABS;   // up from the tabs reaches the corner buttons without walking the row
                 } else {
                     return true;
                 }
