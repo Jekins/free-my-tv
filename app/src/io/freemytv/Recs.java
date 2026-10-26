@@ -101,6 +101,11 @@ final class Recs {
         static final String[] STATUSES = {"released", "returning series", "continuing", "in production", "post production",
             "planned", "upcoming", "pilot", "rumored", "canceled", "ended"};
         static final int MOVIE_STATUSES = bits(0, 3, 4, 5, 8, 9), SHOW_STATUSES = bits(1, 2, 3, 5, 6, 7, 9, 10);
+        /**
+         * On the air: Trakt gives ongoing shows "returning series" and almost never "continuing" (none of its popular
+         * shows, none of the person's recommendations), so the two always go together.
+         */
+        static final int ONGOING = bits(1, 2);
         /** The rating sources, by Trakt's parameter; the least each may give (RATING_MIN, in its own scale). */
         static final String[] RATINGS = {"ratings", "imdb_ratings", "tmdb_ratings", "rt_meters", "rt_user_meters",
             "metascores", "letterboxd_ratings"};
@@ -321,6 +326,7 @@ final class Recs {
                 return new Filter();
             }
             if (f.yearFrom <= 0 || f.yearTo < f.yearFrom) f.yearFrom = f.yearTo = 0;
+            if ((f.statuses & ONGOING) != 0) f.statuses |= ONGOING;
             f.statuses &= statusesOf(TYPES[f.type]);
             return f;
         }

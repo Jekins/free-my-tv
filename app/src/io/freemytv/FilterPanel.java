@@ -23,9 +23,9 @@ import java.util.List;
  * out as tvOS would: on the left its sections, each saying what it's set to, then Reset and Show as buttons; on the
  * right every option of the focused section at once, as capsules in even columns (the decades in a list, the years of
  * the focused one beside it), so the whole list is in sight and a few presses away. The focus is a white capsule that
- * glides and stretches from one option to the next. OK picks (genres: wanted, then left out, then neither; years: they
- * add up into a span, as a slider's two ends would); Back goes from the options to the sections, and from there
- * closes the panel, which applies the filters, as Show does.
+ * glides and stretches from one option to the next. OK picks (genres: wanted, then left out, then neither; years: one,
+ * then the span to a second); Back goes from the options to the sections, and from there closes the panel, which
+ * applies the filters, as Show does.
  */
 final class FilterPanel {
     interface Host {
@@ -43,16 +43,16 @@ final class FilterPanel {
             K_DECADE = 6, K_YEAR = 7, K_STATUS_ANY = 8, K_STATUS = 9, K_RATING = 10, K_PARENTAL = 11, K_UNRATED = 12;
     // A capsule's look: off, picked, left out (a genre), between two years picked.
     private static final int OFF = 0, ON = 1, OUT = 2, WITHIN = 3;
-    /** The statuses in a title's order of life: rumored, planned, made, out, on the air, over. */
-    private static final int[] STATUS_ORDER = {8, 5, 3, 4, 7, 6, 0, 1, 2, 10, 9};
+    /**
+     * The statuses offered: ended, ongoing (returning series, with continuing: Recs.Filter.ONGOING) and canceled first,
+     * then the rest from the present back to the most uncertain: released, upcoming, pilot, post production, in
+     * production, planned, rumored.
+     */
+    private static final int[] STATUS_ORDER = {10, 1, 9, 0, 6, 7, 4, 3, 5, 8};
     /** The genres most films have (the rest, TV's and niche ones, come after them, apart). */
     private static final List<String> MAIN_GENRES = Arrays.asList("action", "adventure", "animation", "anime",
             "biography", "comedy", "crime", "documentary", "drama", "family", "fantasy", "history", "horror", "music",
             "musical", "mystery", "romance", "science-fiction", "superhero", "thriller", "war", "western");
-    private static final long ANIMATION = 1L << Arrays.asList(Recs.Filter.GENRES).indexOf("animation"),
-            ANIME = 1L << Arrays.asList(Recs.Filter.GENRES).indexOf("anime");
-    /** The types offered: all, movies, shows, then cartoons, animated shows and anime (a type and a genre picked). */
-    private static final int TYPE_PRESETS = 6;
     /** A move that leaves the options for the sections. */
     private static final int LEAVE = -1;
     private static final int RED = 0xFFFF453A, INK = 0xFF1D1D1F, WHITE = 0xFFF5F5F7;
@@ -104,7 +104,7 @@ final class FilterPanel {
             shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private Recs.Filter draft = new Recs.Filter();
-    private final String[] typeNames = new String[TYPE_PRESETS];
+    private String[] typeNames = {"", "", ""};
     private String heading = "";
     private final String[] summary = new String[SECTIONS];
     private final RectF panel = new RectF(), pane = new RectF(), tmp = new RectF();
@@ -117,8 +117,7 @@ final class FilterPanel {
     private int shown = -1;                   // the section in the pane
     private int yearsOf;                      // the decade whose years the Years section shows
     private int decades;                      // in the Years section: "any year" and the decades come first
-    private float yearsX, pickedY;            // where the years start, and the line saying which are picked
-    private String yearsText = "";            // the years picked, in full
+    private float yearsX;                     // where the years start, beside the decades
     private int side, focus;                  // the focused section (or Reset, Show); the focused capsule
     private boolean inPane, okDown, backDown;
     private float wantX;                      // ↑ ↓ keep to this x (the capsule's center the focus came from)
@@ -161,10 +160,7 @@ final class FilterPanel {
     void open(Recs.Filter current, String[] types, String tab) {
         draft = current.copy();
         yearsOf = draft.yearFrom > 0 ? draft.yearFrom / 10 * 10 : thisDecade();
-        System.arraycopy(types, 0, typeNames, 0, 3);
-        typeNames[3] = Ui.tr("filter|Cartoons");
-        typeNames[4] = Ui.tr("filter|Animated shows");
-        typeNames[5] = Ui.tr("genre|Anime");
+        typeNames = types;
         heading = Ui.trf("Filters: {tab}", "tab", tab);
         side = 0;
         inPane = okDown = backDown = false;
@@ -422,7 +418,7 @@ final class FilterPanel {
     private int state(Chip c) {
         Recs.Filter d = draft;
         switch (c.kind) {
-            case K_TYPE: return preset(d) == c.value ? ON : OFF;
+            case K_TYPE: return d.type == c.value ? ON : OFF;
             case K_SORT: return d.source == c.value ? ON : OFF;
             case K_MATCH: return d.genres != 0 && (d.allGenres ? 1 : 0) == c.value ? ON : OFF;   // with genres wanted
             case K_GENRE_ANY: return d.genres == 0 && d.without == 0 ? ON : OFF;
@@ -446,7 +442,7 @@ final class FilterPanel {
     private void pick(Chip c) {
         Recs.Filter d = draft;
         switch (c.kind) {
-            case K_TYPE: setPreset(d, c.value); break;
+            case K_TYPE: d.setType(c.value); break;
             case K_SORT: d.source = c.value; break;
             case K_MATCH: d.allGenres = c.value == 1; break;
             case K_GENRE_ANY: d.genres = d.without = 0; break;
@@ -463,66 +459,34 @@ final class FilterPanel {
                 break;
             case K_YEAR_ANY: d.yearFrom = d.yearTo = 0; break;
             case K_DECADE:
-                // A decade adds to the span; the very one picked again lets it go; one inside a wider span narrows it.
-                int a = c.value, b = c.value + 9;
-                if (d.yearFrom == a && d.yearTo == b) {
+                if (d.yearFrom == c.value && d.yearTo == c.value + 9) {
                     d.yearFrom = d.yearTo = 0;
-                } else if (d.yearFrom == 0 || (d.yearFrom <= a && d.yearTo >= b)) {
-                    d.yearFrom = a;
-                    d.yearTo = b;
                 } else {
-                    d.yearFrom = Math.min(d.yearFrom, a);
-                    d.yearTo = Math.max(d.yearTo, b);
+                    d.yearFrom = c.value;
+                    d.yearTo = c.value + 9;
                 }
                 break;
             case K_YEAR:
-                // As a slider's two ends: years picked one after another add up into a span (1960, 1961, 1962 make
-                // 1960–1962); an end picked again comes off; one inside the span moves the nearer end there.
-                int y = c.value;
-                if (d.yearFrom == 0) {
-                    d.yearFrom = d.yearTo = y;
-                } else if (y == d.yearFrom && y == d.yearTo) {
+                // One year; a second one makes the span between them; OK on a lone year again lets it go.
+                if (d.yearFrom == 0 || d.yearFrom != d.yearTo) {
+                    d.yearFrom = d.yearTo = c.value;
+                } else if (d.yearFrom == c.value) {
                     d.yearFrom = d.yearTo = 0;
-                } else if (y == d.yearFrom) {
-                    d.yearFrom++;
-                } else if (y == d.yearTo) {
-                    d.yearTo--;
-                } else if (y < d.yearFrom) {
-                    d.yearFrom = y;
-                } else if (y > d.yearTo) {
-                    d.yearTo = y;
-                } else if (y - d.yearFrom <= d.yearTo - y) {
-                    d.yearFrom = y;
                 } else {
-                    d.yearTo = y;
+                    d.yearFrom = Math.min(d.yearFrom, c.value);
+                    d.yearTo = Math.max(d.yearTo, c.value);
                 }
                 break;
             case K_STATUS_ANY: d.statuses = 0; break;
-            case K_STATUS: d.statuses ^= 1 << c.value; break;
+            case K_STATUS: {
+                int bits = c.value == 1 ? Recs.Filter.ONGOING : 1 << c.value;   // ongoing: returning and continuing
+                if ((d.statuses & 1 << c.value) != 0) d.statuses &= ~bits;
+                else d.statuses |= bits;
+                break;
+            }
             case K_RATING: d.ratings[c.group] = c.value; break;
             case K_PARENTAL: d.parental[c.group] = c.value; break;
             default: d.unrated = c.value == 1; break;
-        }
-    }
-
-    /** The type offered that the filter is: its type, and with movies or shows the animation genre, with both anime. */
-    private static int preset(Recs.Filter d) {
-        boolean animated = (d.genres & ANIMATION) != 0;
-        if (d.type == Recs.Filter.MOVIES) return animated ? 3 : 1;
-        if (d.type == Recs.Filter.SHOWS) return animated ? 4 : 2;
-        return (d.genres & ANIME) != 0 ? 5 : 0;
-    }
-
-    /** Picks a type offered: the type, and the genre that makes it (only on the screen: Trakt sees a type and genres). */
-    private static void setPreset(Recs.Filter d, int preset) {
-        d.setType(preset == 1 || preset == 3 ? Recs.Filter.MOVIES : preset == 2 || preset == 4 ? Recs.Filter.SHOWS : 0);
-        d.genres &= ~(ANIMATION | ANIME);
-        if (preset == 3 || preset == 4) {
-            d.genres |= ANIMATION;
-            d.without &= ~ANIMATION;
-        } else if (preset == 5) {
-            d.genres |= ANIME;
-            d.without &= ~ANIME;
         }
     }
 
@@ -585,8 +549,8 @@ final class FilterPanel {
             case S_TYPE: {
                 group(null);
                 List<Chip> types = new ArrayList<>();
-                for (int i = 0; i < TYPE_PRESETS; i++) types.add(make(K_TYPE, 0, i, typeNames[i], false));
-                grid(types, 3);   // all, movies, shows; under them their animated kinds
+                for (int i = 0; i < typeNames.length; i++) types.add(make(K_TYPE, 0, i, typeNames[i], false));
+                grid(types, 3);   // all, movies, shows: one line, in the columns the other sections have
                 break;
             }
             case S_SORT:
@@ -725,8 +689,8 @@ final class FilterPanel {
 
     /**
      * Any year and the decades in a list on the left, each a line of its own; beside them the years of one decade (the
-     * one the focus is on, or was last), two lines of five, and under them which years are picked. A few roomy
-     * capsules at a time, as tvOS would have it, rather than a century of narrow ones; ↑ ↓ never leave the list.
+     * one the focus is on, or was last), two lines of five. A few roomy capsules at a time, as tvOS would have it,
+     * rather than a century of narrow ones; ↑ ↓ never leave the list.
      */
     private void yearsSection() {
         List<Chip> list = new ArrayList<>();
@@ -763,7 +727,6 @@ final class FilterPanel {
             c.line = tops.size() - 1;
             chips.add(c);
         }
-        pickedY = LABEL_H * k + 2 * CHIP_H * k + LINE_GAP * k + 60 * k;
         cy = (decades - 1) * (CHIP_H + DECADE_GAP) * k;   // the list is the tallest: its last line ends the content
         lines = tops.size();
     }
@@ -783,7 +746,6 @@ final class FilterPanel {
         switch (Recs.Filter.STATUSES[i]) {
             case "released": return Ui.tr("status|Released");
             case "returning series": return Ui.tr("status|Returning");
-            case "continuing": return Ui.tr("status|Continuing");
             case "in production": return Ui.tr("status|In Production");
             case "post production": return Ui.tr("status|Post Production");
             case "planned": return Ui.tr("status|Planned");
@@ -883,7 +845,7 @@ final class FilterPanel {
     private void summarize() {
         Recs.Filter d = draft;
         String[] full = new String[SECTIONS];
-        full[S_TYPE] = typeNames[preset(d)];
+        full[S_TYPE] = typeNames[d.type];
         full[S_SORT] = sortName(d.source);
         StringBuilder g = new StringBuilder();
         String join = d.allGenres && Long.bitCount(d.genres) > 1 ? " + " : ", ";
@@ -897,7 +859,6 @@ final class FilterPanel {
         full[S_YEARS] = d.yearFrom == 0 ? Ui.tr("filter|Any year") : d.yearFrom == d.yearTo ? String.valueOf(d.yearFrom)
                 : d.yearFrom % 10 == 0 && d.yearTo == d.yearFrom + 9 ? Ui.trf("filter|{year}s", "year", String.valueOf(d.yearFrom))
                 : Ui.trf("filter|{from}–{to}", "from", String.valueOf(d.yearFrom), "to", String.valueOf(d.yearTo));
-        yearsText = d.yearFrom == 0 ? "" : Ui.trf("filter|Picked: {years}", "years", full[S_YEARS]);
         StringBuilder s = new StringBuilder();
         for (int i : STATUS_ORDER) if ((d.statuses & 1 << i) != 0) s.append(s.length() > 0 ? ", " : "").append(statusName(i));
         full[S_STATUS] = s.length() > 0 ? s.toString() : Ui.tr("filter|Any status");
@@ -948,7 +909,7 @@ final class FilterPanel {
     private String paneHint() {
         switch (shown) {
             case S_GENRES: return Ui.tr("filter|OK: wanted · again: left out · again: neither");
-            case S_YEARS: return Ui.tr("filter|OK adds a year to the span · again on an end takes it off");
+            case S_YEARS: return Ui.tr("filter|OK on two years: the years between");
             case S_STATUS: return Ui.tr("filter|OK ticks a status: as many as you like");
             case S_CONTENT: return Ui.tr("filter|IMDb's parental guide: the most each may have");
             default: return Ui.tr("filter|OK: pick · Back: the sections");
@@ -1008,10 +969,6 @@ final class FilterPanel {
         for (int i = 0; i < labels.size(); i++) {   // no iterator: drawn on every frame the focus moves
             Label l = labels.get(i);
             if (l.y > viewTop && l.y < viewBottom + LABEL_H * k) c.drawText(l.text, l.x, l.y, labelPaint);
-        }
-        if (shown == S_YEARS && !yearsText.isEmpty()) {
-            item.setColor(blend(Ui.ACCENT_DEEP, Ui.ACCENT, dark));
-            c.drawText(yearsText, yearsX + 4 * k, pickedY, item);
         }
         // Fills: picked in the accent, left out red, the years between faintly in the accent; the rest glass, with a bright
         // rim.
