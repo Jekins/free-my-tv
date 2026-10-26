@@ -996,7 +996,9 @@ final class FilterPanel {
             float pr = tmp.height() / 2;
             tmp.offset(0, 5 * k);
             shadow.setColor(Ui.alpha(0xFF000000, blend01(0.14f, 0.32f) * p));
-            shadows.draw(c, tmp, pr, 14 * k, shadow);
+            // Hollow: its size changes on every frame of the glide, and a blur mask would be made and uploaded each time;
+            // the white capsule covers the middle anyway.
+            shadows.draw(c, tmp, pr, 14 * k, shadow, true);
             tmp.offset(0, -5 * k);
             fill.setColor(Ui.alpha(0xFFFFFFFF, p));
             c.drawRoundRect(tmp, pr, pr, fill);

@@ -4280,7 +4280,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (searchOn()) drawSearch(c);
         String kind = rowKind();
         String empty = searchOpen ? searchEmpty : slots > 0 || recs.loading(kind) ? null
-                : Recs.WATCHLIST.equals(kind) ? (Recs.canFilter() ? Ui.tr("Your Trakt watchlist is empty. Hold OK on a card to add it.")
+                : Recs.WATCHLIST.equals(kind) ? (traktIn ? Ui.tr("Your Trakt watchlist is empty. Hold OK on a card to add it.")
                         : Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."))
                 : !recs.filter(kind).none() ? Ui.tr("Nothing here with these filters. Press ↑ on the tab to change them.") : null;
         if (empty != null) c.drawText(empty, w / 2f, (L_CARDS_TOP + L_CARD_H / 2) * k + Ui.halfCap(lEmpty), lEmpty);
