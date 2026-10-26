@@ -26,6 +26,9 @@ import android.view.KeyEvent;
  * hot-key receiver (partnercustomizer's GlobalKeyReceiver).
  * On Hisense TVs, the Prime Video, YouTube, Disney+, All Apps, Settings (gear) and profile buttons go to Google TV's
  * home app, which Free My TV mode turns off: without the filter they do nothing. Netflix stays with the system.
+ * On JMGO projectors (K93A, MediaTek, Google TV 14 tested), the Settings (gear) button is SETTINGS, a global key for
+ * JMGO's hippo, which asks the system for Google TV's side panel: that panel is the stock home screen's, so with it
+ * off nothing opens. The filter sees the key first, and by default it opens TV Settings.
  */
 final class RemoteKeys {
     private RemoteKeys() {}
@@ -38,7 +41,7 @@ final class RemoteKeys {
      * Vestel builds TVs sold under other brands (F&U...), so BRAND varies: check the maker too.
      */
     static final boolean TCL = is("TCL"), VESTEL = is("Vestel"), KTC = is("KTC"), SONY = is("Sony"), FORMOVIE = is("Formovie"),
-            HISENSE = is("Hisense");
+            HISENSE = is("Hisense"), JMGO = is("JMGO");
     /**
      * Xiaomi TVs (models MiTV-M…; MiTV-MSSP3, MediaTek, Android TV 9 tested). Not the Mi Box or Mi TV Stick, the slowest
      * devices we run on, whose remotes have a Home button; Formovie's Xiaomi projectors have their own remote.
@@ -53,7 +56,7 @@ final class RemoteKeys {
     private static long lastDown;
 
     static boolean supported() {
-        return TCL || STEM_NETFLIX || KTC || SONY || XIAOMI || HISENSE;
+        return TCL || STEM_NETFLIX || KTC || SONY || XIAOMI || HISENSE || JMGO;
     }
 
     private static boolean is(String maker) {

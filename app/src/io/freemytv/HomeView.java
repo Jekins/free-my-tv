@@ -1571,10 +1571,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float radius = (TILE_RADIUS + SHELF_PAD) * k;
         tmp.set(platterRect);
         tmp.offset(0, 18 * k);
-        shadow.setColor(tone(0x1F000000, 0x52000000));
+        shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f)));
         shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
-        // White glass by day, smoked at night; clear, so the background changing under it doesn't redraw it.
-        scene.clear(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.42f, 0.12f), tone(0.03f, 0.08f), tone(0.65f, 0.95f), 1);
+        // The magnifier's glass and shadow (drawSearch): white by day, smoked at night, a soft rim; clear, so the
+        // background changing under it doesn't redraw it.
+        scene.clear(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1);
     }
 
     /** The quotes row's text and sizes, for one set of coins, prices and text size. */
@@ -2597,6 +2598,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     okDown = okHeld = false;
                 }
                 return true;
+            case KeyEvent.KEYCODE_MENU:
+                // The remote's menu key (≡) opens what holding OK opens: a pick's menu, or Explore's filters.
+                if (!canPickMenu() && !canFilter()) return false;
+                if (down && e.getRepeatCount() == 0) {
+                    if (canPickMenu()) openPickMenu(); else openFilters(false);
+                }
+                return true;
             case KeyEvent.KEYCODE_SEARCH:
                 // With the search's field open, the remote's search key speaks into it; elsewhere it's the TV's own.
                 if (!searchOpen || voice == null) return false;
@@ -2605,9 +2613,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case KeyEvent.KEYCODE_SETTINGS:
             case KeyEvent.KEYCODE_NOTIFICATION:
                 // The remote's Settings button (TCL's sends NOTIFICATION) opens TV Settings, as Hisense's gear does by
-                // default; ours are Home Settings in the drawer. Hisense's gear is a Remote Buttons choice (RemoteKeys);
-                // where the system takes the key first (a JMGO's opens its picture panel), it never gets here.
-                if (RemoteKeys.HISENSE) return false;
+                // default; ours are Home Settings in the drawer. Hisense's and JMGO's gears are Remote Buttons choices
+                // (RemoteKeys): global keys the system would take first.
+                if (RemoteKeys.HISENSE || RemoteKeys.JMGO) return false;
                 if (down && e.getRepeatCount() == 0) HomeApps.open(activity, HomeApps.tvSettings(), this, w / 2, h / 2, 1, 1);
                 return true;
             case KeyEvent.KEYCODE_BACK:
@@ -2934,6 +2942,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private Bitmap menuSharp;   // and as it was, full size: it stands in for the home screen while the menu fades
     private Bitmap shotNext, sharpNext;   // the two copies of the screen as they come in (the menu shows once both have)
     private int[] shotPx;
+    // How dark the picture under the panel is (0 or 1, the night's dark() aside), as Liquid Glass adapts: by day over a
+    // dark photo the panel is drawn as at night, its text white. Without the copy, over the plain dim: dark.
+    private float menuUnder = 1, shotUnder;
     private Scene menuScene;    // the panel's glass, over that copy
     private final Paint shotPaint = new Paint(Paint.FILTER_BITMAP_FLAG), starLine = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Paint menuText, menuHint, menuTitle, menuValue, lEmpty, lBadge;
@@ -3060,7 +3071,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         handler.postDelayed(menuFallback, 250);
         shotNext = sharpNext = null;
         shotPx = null;
-        int sw = Backdrop.GW / 2, sh = Backdrop.GH / 2, radius = Math.round(8 * sw / (w / 4f)), keep = Math.round(256 * (1 - tone(0.1f, 0.3f)));
+        int sw = Backdrop.GW / 2, sh = Backdrop.GH / 2, radius = Math.round(8 * sw / (w / 4f));
+        float darkNow = dark();
+        // The panel's place on the small copy (placeMenu ran just before).
+        int x0 = clampInt(Math.round(menuRect.left * sw / w), 0, sw - 1), x1 = clampInt(Math.round(menuRect.right * sw / w), x0 + 1, sw);
+        int y0 = clampInt(Math.round(menuRect.top * sh / h), 0, sh - 1), y1 = clampInt(Math.round(menuRect.bottom * sh / h), y0 + 1, sh);
         Bitmap small = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
         Bitmap full = Bitmap.createBitmap(Math.max(1, w), Math.max(1, h), Bitmap.Config.ARGB_8888);
         try {
@@ -3071,6 +3086,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 }
                 SHOTS.execute(() -> {
                     int[] px = Backdrop.reduce(small, sw, sh, radius, 3);
+                    float under = Math.max(darkNow, luma(px, sw, x0, y0, x1, y1) < DARK_UNDER ? 1 : 0);
+                    int keep = Math.round(256 * (1 - (0.1f + 0.2f * under)));   // dimmed a tenth by day, 30% at night
                     for (int i = 0; i < px.length; i++) {
                         int c = px[i];
                         px[i] = 0xFF000000 | (((c >> 16) & 255) * keep >> 8) << 16 | (((c >> 8) & 255) * keep >> 8) << 8 | (c & 255) * keep >> 8;
@@ -3084,6 +3101,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                         if (id != menuShotId || !menuOpen) return;
                         shotNext = shot;
                         shotPx = glassPx;
+                        shotUnder = under;
                         copiesIn(id);
                     });
                 });
@@ -3107,12 +3125,45 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (menuScene == null) menuScene = new Scene(false);
         menuScene.setSize(w, h);
         menuScene.setGlassImage(shotPx);
+        menuUnder = shotUnder;
         menuShot = shotNext;
         menuSharp = sharpNext;
         shotNext = sharpNext = null;
         shotPx = null;
         menuBackDirty = true;
         showMenu(id);
+    }
+
+    /** Below it, the panel's text is dark on light glass; above it, white on smoked glass. */
+    private static final float DARK_UNDER = 0.45f;
+
+    /** Mean luma (0…1, of the gamma-coded values) of the pixels in [x0, x1) × [y0, y1) of `px` (`stride` wide). */
+    private static float luma(int[] px, int stride, int x0, int y0, int x1, int y1) {
+        long sum = 0;
+        for (int y = y0; y < y1; y++) {
+            for (int x = x0; x < x1; x++) {
+                int c = px[y * stride + x];
+                sum += 54 * ((c >> 16) & 255) + 183 * ((c >> 8) & 255) + 19 * (c & 255);   // Rec. 709, out of 256
+            }
+        }
+        return sum / (256f * 255 * (x1 - x0) * (y1 - y0));
+    }
+
+    private static int clampInt(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    /** How dark the menu and the filters are drawn: the night's, or the picture's under them. */
+    private float menuDark() {
+        return menuShot == null ? 1 : Math.max(dark(), menuUnder);
+    }
+
+    private int menuTone(int onLight, int onDark) {
+        return blend(onLight, onDark, menuDark());
+    }
+
+    private float menuTone(float onLight, float onDark) {
+        return onLight + (onDark - onLight) * menuDark();
     }
 
     /** Starts the fade-in, once per opening (the copy or the fallback, whichever comes first). */
@@ -3166,6 +3217,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Keys while the menu is open: ↑ ↓ between its items, ← → along the stars, OK, and Back closes it. */
     private boolean menuKey(KeyEvent e, boolean down) {
+        if (e.getKeyCode() == KeyEvent.KEYCODE_MENU) {
+            // ≡ again closes what it opened (the filters as Back does: their titles show).
+            if (down && e.getRepeatCount() == 0) {
+                closePickMenu(false);
+                click.move();
+            }
+            return true;
+        }
         if (menuFilters) return filterPanel.key(e, down);
         switch (e.getKeyCode()) {
             case KeyEvent.KEYCODE_DPAD_UP:
@@ -3457,24 +3516,25 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /**
-     * The panel: Liquid Glass over what is really behind it (the menu's blurred copy of the screen), clear but for a
-     * faint tint, bending it near the rim and catching the light there; a soft shadow under it.
+     * The panel: Liquid Glass over what is really behind it (the menu's blurred copy of the screen), bending it near the
+     * rim and catching the light there; a soft shadow under it. Smoked and nearly clear when dark (menuDark); light, a
+     * frosted white, so its dark text and chips never sit on a dark photo showing through.
      */
     private void drawMenuGlass(Canvas c) {
         float radius = (menuFilters ? FilterPanel.RADIUS : MENU_ITEM_H / 2 + MENU_PAD) * k;
         tmp.set(menuRect);
         tmp.offset(0, 18 * k);
-        shadow.setColor(tone(0x14000000, 0x40000000));
+        shadow.setColor(menuTone(0x14000000, 0x40000000));
         shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
         boolean behind = menuShot != null && menuScene != null;
-        (behind ? menuScene : scene).liquid(c, menuRect, radius, tone(0xFFFFFFFF, SMOKE), behind ? tone(0.14f, 0.1f) : tone(0.42f, 0.12f),
-                tone(0.04f, 0.06f), tone(30, 34) * k, tone(22, 28) * k, tone(0.65f, 0.95f), 1);
+        (behind ? menuScene : scene).liquid(c, menuRect, radius, menuTone(0xFFFFFFFF, SMOKE), behind ? menuTone(0.6f, 0.1f) : menuTone(0.42f, 0.12f),
+                menuTone(0.04f, 0.06f), menuTone(30f, 34f) * k, menuTone(22f, 28f) * k, menuTone(0.65f, 0.95f), 1);
     }
 
     /** The items, focused the tvOS way (a white pill); the second one, once watched, ten stars. */
     private void drawMenuItems(Canvas c) {
         if (menuFilters) {
-            filterPanel.draw(c, dark());
+            filterPanel.draw(c, menuDark());
             return;
         }
         if (menuPick == null) return;
@@ -3485,14 +3545,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (f > 0.01f) {
                 tmp.set(cell);
                 tmp.offset(0, 6 * k * f);
-                shadow.setColor(Ui.alpha(0xFF000000, tone(0.12f, 0.3f) * f));
+                shadow.setColor(Ui.alpha(0xFF000000, menuTone(0.12f, 0.3f) * f));
                 shadows.draw(c, tmp, ih / 2, SHADOW_BLUR * k, shadow);
                 fill.setShader(null);
                 fill.setColor(Ui.alpha(0xFFFFFFFF, f));
                 c.drawRoundRect(cell, ih / 2, ih / 2, fill);
             }
             int item = menuItem(i);
-            int ink = item != M_TRAILER && !menuSignedIn ? tone(L_FAINT, 0xFF8E8E93) : blend(tone(L_INK, WHITE), L_INK, f);
+            int ink = item != M_TRAILER && !menuSignedIn ? menuTone(L_FAINT, 0xFF8E8E93) : blend(menuTone(L_INK, WHITE), L_INK, f);
             float cy = cell.centerY(), textX = cell.left + 84 * k;
             String icon = item == M_TRAILER ? "play" : item == M_WATCHED ? "check" : item == M_HIDE ? "hide"
                     : recs.watchlisted(menuPick) ? "bookmark_remove" : "bookmark_add";
