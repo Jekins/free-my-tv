@@ -2,7 +2,9 @@ package io.freemytv;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.LauncherApps;
 import android.content.pm.PackageManager;
@@ -17,6 +19,7 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.media.tv.TvInputManager;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -27,6 +30,7 @@ import android.text.TextPaint;
 import android.text.TextUtils;
 import android.view.Choreographer;
 import android.view.KeyEvent;
+import android.view.PixelCopy;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityManager;
@@ -38,8 +42,10 @@ import org.json.JSONObject;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
@@ -89,7 +95,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final long TOAST_MS = 6000, FADE_MS = 800;
     /** Blur radii of the shadow and shadowDeep paints (Shadows needs them to draw the same blur on older TVs). */
     private static final float SHADOW_BLUR = 26, DEEP_BLUR = 30;
-    private static final int SKY = 0, HERO = 1, STATUS = 2, PLATTER = 3, TILES = 4, DRAWER = 5, SHEET = 6, TOAST = 7;
+    private static final int SKY = 0, HERO = 1, STATUS = 2, PLATTER = 3, TILES = 4, DRAWER = 5, SHEET = 6, TOAST = 7, MENU = 8, MENU_GLASS = 9, MENU_ITEMS = 10, MENU_SHARP = 11;
     private static final int Z_STATUS = 0, Z_HERO = 1, Z_SHELF = 2, Z_DRAWER = 3;
     private static final ExecutorService LOADER = Executors.newSingleThreadExecutor();
     // Light design (the L_ constants): title, tab bar, three recommendation cards and the shelf.
@@ -130,7 +136,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         @Override public void hold(int id) { a11yHold(); }
     });
     private final RectF a11yRect = new RectF();
-    private final Layer sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, toastLayer;
+    private final Layer sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass,
+            menuItemsLayer, toastLayer;
     private int zone = Z_SHELF;
 
     // Night look (like Apple's "Automatic" appearance): darker from sunset to sunrise, with a 2 s transition.
@@ -153,12 +160,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // The row of picks, as on Apple TV: the focused card is wide and the others tall, each width a spring, and the row
     // scrolls only when the wide card wouldn't fit. → past the last card asks Recs for more; empty cards (slots) hold
     // their places, softly pulsing, until their titles are confirmed. The focused card stretches past its size once and
-    // comes back softly (a spring with its own `back`), a little thinner meanwhile. As it grows, the next card gives way
-    // at once, squeezing the gap after it, and comes back: pushed by most of the stretch and by the focus growth ahead
-    // of cardLag, a slower copy of cardFocus, so the two never touch.
-    private final List<Spring> cardFocus = new ArrayList<>(), cardWide = new ArrayList<>(), cardLag = new ArrayList<>();
+    // comes back softly (a spring with its own `back`), a little thinner meanwhile. The next card stays put until only
+    // their final gap is left between them; from there it moves with the stretch and comes back with it, squeezing the
+    // gap after it.
+    private final List<Spring> cardFocus = new ArrayList<>(), cardWide = new ArrayList<>();
     private static final float CARD_SQUASH = 0.25f;   // height lost per width stretched past its size: ~1% at a move
-    private static final float PUSH_STRETCH = 0.75f, PUSH_GROW = 1.1f;   // the next card gives way up to ~30 px
     private final Spring rowScroll = new Spring(0.42f, 0.92f, 0), rowNudge = new Spring(0.24f, 0.42f, 0);
     private RectF[] cardRects = new RectF[0];   // each slot at rest (the focused one wide): moving up and down, TalkBack
     private CardText[] cardWords = new CardText[0];
@@ -359,6 +365,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 case TILES: drawTiles(c); break;
                 case DRAWER: drawDrawer(c); break;
                 case SHEET: drawSheet(c); break;
+                case MENU_SHARP: if (menuSharp != null) c.drawBitmap(menuSharp, null, screen, null); break;
+                case MENU: drawMenuBack(c); break;
+                case MENU_GLASS: drawMenuGlass(c); break;
+                case MENU_ITEMS: drawMenuItems(c); break;
                 default: drawToast(c); break;
             }
             scene.setOffset(0, 0);
@@ -426,13 +436,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tiles = new Layer(a, TILES);
         drawerLayer = new Layer(a, DRAWER);
         sheetLayer = new Layer(a, SHEET);
+        menuSharpLayer = new Layer(a, MENU_SHARP);
+        menuLayer = new Layer(a, MENU);
+        menuGlass = new Layer(a, MENU_GLASS);
+        menuItemsLayer = new Layer(a, MENU_ITEMS);
         toastLayer = new Layer(a, TOAST);
         // Hardware layers on the GPU: only the one that changed is redrawn; moving, fading and scaling stay cheap.
         // Not on Android 8 to 11: on older GPUs (a Mi Box 3's Mali-450) redrawing and compositing a big layer on every
         // frame cost more than drawing straight to the screen (measured: focus on the picks 33 → 12 ms a frame, the
         // drawer 19 → 17 ms).
-        for (View v : new View[] {heroLayer, status, platter, tiles, drawerLayer, sheetLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
-        for (View v : new View[] {sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, toastLayer}) {
+        for (View v : new View[] {heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass, menuItemsLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
+        for (View v : new View[] {sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer,
+                menuGlass, menuItemsLayer, toastLayer}) {
             v.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);   // TalkBack reads the items (Spoken)
             addView(v);
         }
@@ -446,6 +461,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         recs.setLight(true);
         checkNight(false);
         sheetLayer.setVisibility(INVISIBLE);
+        for (View v : new View[] {menuSharpLayer, menuLayer, menuGlass, menuItemsLayer}) v.setVisibility(INVISIBLE);
+        for (int i = 0; i < starFocus.length; i++) starFocus[i] = new Spring(0.26f, 0.8f, 0);
         scene.setMotion(0.6f, 0f);
         updatePalette();
         // First time: right away (a cold start opens with the apps already there); missing logos come from reload().
@@ -507,6 +524,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (!running) return;
         running = false;
         cancelReorder(true);
+        closePickMenu(true);
         handler.removeCallbacks(holdStart);
         okHeld = holdArmed = false;
         Choreographer.getInstance().removeFrameCallback(this);
@@ -531,6 +549,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     void reset(boolean animated) {
         wake();
         cancelReorder(!animated);
+        closePickMenu(!animated);
         zone = Z_SHELF;
         shelfIndex = 0;
         sheetOpen = false;
@@ -637,6 +656,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         measure(tiles, width, Math.round(270 * kk));
         measure(drawerLayer, width, Math.round(600 * kk));
         measure(sheetLayer, width, height);
+        measure(menuSharpLayer, width, height);
+        measure(menuLayer, width, height);
+        for (View v : new View[] {menuGlass, menuItemsLayer}) measure(v, Math.max(1, menuBounds.width()), Math.max(1, menuBounds.height()));
         measure(toastLayer, Math.round(1000 * kk), Math.round(220 * kk));
         setMeasuredDimension(width, height);
     }
@@ -657,6 +679,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sheetLayer.layout(0, 0, width, height);
         sheetLayer.setPivotX(width / 2f);
         sheetLayer.setPivotY(height / 2f);
+        menuSharpLayer.layout(0, 0, width, height);
+        menuLayer.layout(0, 0, width, height);
+        for (View v : new View[] {menuGlass, menuItemsLayer}) v.layout(menuBounds.left, menuBounds.top, menuBounds.right, menuBounds.bottom);
         place(toastLayer, (width - toastLayer.getMeasuredWidth()) / 2, 0);
     }
 
@@ -705,6 +730,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lCardTitle.setLetterSpacing(0.012f);
         lCardMeta = Ui.text(Ui.medium, 25 * k, L_DIM);
         starPaint.setPathEffect(new android.graphics.CornerPathEffect(0.08f));   // rounded points, like SF Symbols' star
+        starLine.setStyle(Paint.Style.STROKE);
+        starLine.setStrokeWidth(0.07f);         // in the star's own units (it's drawn 1 unit across, scaled)
+        starLine.setStrokeJoin(Paint.Join.ROUND);
+        starLine.setPathEffect(new android.graphics.CornerPathEffect(0.08f));
+        menuText = Ui.text(Ui.medium, 30 * k, L_INK);
         lQuote = Ui.numbers(Ui.regular, 21 * k, L_FAINT);
         lTip = Ui.text(Ui.semibold, 25 * k, L_INK);
         lTip.setTextAlign(Paint.Align.CENTER);
@@ -775,7 +805,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean heroMoving = heroFocus.step(dt);
         boolean topMoving = step(topFocus, dt);
         // The row: lift, widths, scroll and the bump at its end; empty cards pulse while their titles load.
-        boolean cardsMoving = step(cardFocus, dt) | step(cardWide, dt) | step(cardLag, dt) | rowScroll.step(dt) | rowNudge.step(dt)
+        boolean cardsMoving = step(cardFocus, dt) | step(cardWide, dt) | rowScroll.step(dt) | rowNudge.step(dt)
                 | slots > cards.size() | up < fadingUntil;
         if (topMoving) status.invalidate();
         heroMoving |= topMoving | cardsMoving;
@@ -783,6 +813,40 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean gridMoving = step(gridFocus, dt) | scroll.step(dt);
         boolean drawerMoving = drawer.step(dt);
         boolean sheetMoving = sheet.step(dt);
+        // The menu opens and closes by fading and scaling its cached layers (redrawing the glass on every frame costs
+        // this TV ~50 ms a frame); only the items are redrawn, while their focus moves. Meanwhile a still copy of the
+        // screen stands in for the home screen's layers, which aren't drawn: composing them all under the fading menu
+        // cost ~50 ms of GPU a frame, the copy and the menu alone ~17.
+        boolean itemsMoving = step(menuFocus, dt) | step(starFocus, dt), menuMoving = menu.step(dt) | itemsMoving;
+        if (itemsMoving || menuDirty) menuItemsLayer.invalidate();
+        if (menuBackDirty) {
+            menuSharpLayer.invalidate();
+            menuLayer.invalidate();
+            menuGlass.invalidate();
+        }
+        menuDirty = menuBackDirty = false;
+        // First a warm-up frame: the copy alone shows (it looks just like the screen, so a long frame goes unseen) while
+        // the menu's layers are drawn almost transparent, so the GPU has them ready; the fade starts on the next frame.
+        if (menuWarm > 0 && --menuWarm == 0) menu.target = 1;
+        float ma = Ui.clamp(menu.value), msc = 0.9f + 0.1f * ma;
+        boolean menuShown = menuWarm > 0 || ma > 0.002f, covers = menuShown && menuSharp != null;
+        boolean opaque = menuOpen && ma >= 0.999f && menuShot != null;   // the blurred copy hides the sharp one too
+        if (menuWarm > 0) ma = 0.01f;
+        if (covers != menuCovers) {
+            menuCovers = covers;
+            motionDirty = true;
+        }
+        for (View v : new View[] {menuLayer, menuGlass, menuItemsLayer}) {
+            v.setAlpha(ma);
+            if (menuShown != (v.getVisibility() == VISIBLE)) v.setVisibility(menuShown ? VISIBLE : INVISIBLE);
+        }
+        for (View v : new View[] {menuGlass, menuItemsLayer}) {
+            v.setScaleX(msc);
+            v.setScaleY(msc);
+        }
+        if (covers != (menuSharpLayer.getVisibility() == VISIBLE)) menuSharpLayer.setVisibility(covers ? VISIBLE : INVISIBLE);
+        menuSharpLayer.setAlpha(opaque ? 0 : 1);   // transparent, not invisible: kept ready for the fade out
+        if (!menuShown && !menuOpen) menuShot = menuSharp = null;
         boolean toastFading = tickToast(up);
         boolean heroFading = tickHeroFade(up);
         boolean bgFading = tickBackgroundFade(up);
@@ -814,7 +878,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
         // Busy: something is moving, or the sheet or the drawer is open.
         boolean busy = tilesMoving || statusMoving || heroMoving || drawerItemsMoving || gridMoving || drawerMoving
-                || sheetMoving || toastFading || heroFading || bgFading || nightMoving || sheetOpen || sheet.value > 0.001f
+                || sheetMoving || menuMoving || menuWarm > 0 || toastFading || heroFading || bgFading || nightMoving || sheetOpen || sheet.value > 0.001f
                 || drawerOpen || drawer.value > 0.001f || toast != null || !toasts.isEmpty();
         idle = !busy;
         if (busy) Choreographer.getInstance().postFrameCallback(this);
@@ -851,6 +915,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         show(status, top, lift);
         show(platter, home, lift);
         show(tiles, home, lift);
+        // Under the menu's opaque blurred copy nothing needs drawing: transparent, not invisible, so the GPU keeps their
+        // layers and the screen comes back without redrawing them.
+        sky.setAlpha(menuCovers ? 0 : 1);
+        if (menuCovers) for (View v : new View[] {heroLayer, status, platter, tiles}) v.setAlpha(0);
         float da = home * smoothstep(0.1f, 0.6f, dc);
         drawerLayer.setTranslationY((1 - d) * shift);
         drawerLayer.setAlpha(da);
@@ -2002,7 +2070,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (slots == 0 || tallW == 0) return false;
         int focus = Math.min(cardIndex, slots - 1);
         boolean changed = aim(cardWide, focus, snap);
-        aim(cardLag, !sheetOpen && zone == Z_CARDS ? cardIndex : -1, snap);
         float margin = MARGIN * k, left = margin + focus * (tallW + cardGap), right = left + wideW;
         float s = rowScroll.target;
         if (left - s < margin) s = left - margin;
@@ -2304,6 +2371,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         wake();
         boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
         if (reordering) return reorderKey(e, down);
+        if (menuOpen) return menuKey(e, down);
         int code = e.getKeyCode();
         if (down && code != KeyEvent.KEYCODE_DPAD_CENTER && code != KeyEvent.KEYCODE_ENTER
                 && code != KeyEvent.KEYCODE_NUMPAD_ENTER) {
@@ -2336,7 +2404,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                         okDown = true;
                         okHeld = false;
                         handler.removeCallbacks(holdStart);
-                        holdArmed = sheetOpen ? canToggleShelf(gridIndex) : canReorder();
+                        holdArmed = sheetOpen ? canToggleShelf(gridIndex) : canReorder() || canPickMenu();
                         if (holdArmed) handler.postDelayed(holdStart, HOLD_MS);
                     } else if (okDown && holdArmed && e.isLongPress()) {
                         hold();
@@ -2566,10 +2634,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (!opened) showToast(Ui.trf("Couldn't open {app}.", "app", it.label));
     }
 
-    // MARK: - Holding OK: All Apps puts the app on the shelf or takes it off; on the shelf, the app is lifted to move
+    // MARK: - Holding OK: All Apps puts the app on the shelf or takes it off; on the shelf, the app is lifted to move;
+    // on a pick, its menu opens
 
     private void hold() {
-        if (sheetOpen) toggleShelf(); else startReorder();
+        if (sheetOpen) toggleShelf(); else if (canPickMenu()) openPickMenu(); else startReorder();
     }
 
     /** TalkBack's long click on an app in All Apps (once per press, if the remote's hold also arrives). */
@@ -2626,6 +2695,413 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 reload();
             });
         });
+    }
+
+    // MARK: - A pick's menu (OK held on its card): its trailer on YouTube; watched and rated on Trakt
+
+    private static final int M_TRAILER = 0, M_WATCHED = 1;
+    private static final float MENU_W = 600, MENU_ITEM_H = 88, MENU_PAD = 14, MENU_GAP = 6;
+    /** A rating goes to Trakt this long after the last star pressed (or as the menu closes): one request, not one a press. */
+    private static final long RATE_AFTER_MS = 1200;
+    private static final String YOUTUBE = "com.google.android.youtube.tv";
+    private final Spring menu = new Spring(0.34f, 0.86f, 0);
+    private final Spring[] menuFocus = {new Spring(0.26f, 0.85f, 0), new Spring(0.26f, 0.85f, 0)};
+    private final Spring[] starFocus = new Spring[5];
+    private boolean menuOpen, menuDirty, menuBackDirty, menuRight, menuCovers, menuSignedIn;   // signed in to Trakt: read once as it opens (a file)
+    private Recs.Pick menuPick;
+    private int menuCard, menuIndex, starIndex, menuShotId, menuWarm;
+    private Bitmap menuShot;    // the screen behind the menu: a small copy, blurred and dimmed
+    private Bitmap menuSharp;   // and as it was, full size: it stands in for the home screen while the menu fades
+    private Scene menuScene;    // the panel's glass, over that copy
+    private final Paint shotPaint = new Paint(Paint.FILTER_BITMAP_FLAG), starLine = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Paint menuText;
+    private final RectF menuRect = new RectF();   // the panel at rest, on screen
+    private final Rect menuBounds = new Rect();   // its two layers: the panel and room for its shadow
+    // Trakt, per title (Recs.key): marked watched from here; the stars chosen; the stars sent (or on their way)
+    private final Set<String> watched = new HashSet<>();
+    private final Map<String, Float> rated = new HashMap<>(), ratedSent = new HashMap<>();
+    private Recs.Pick ratePick;
+    private final Runnable rateNow = this::sendRating;
+    private final Runnable menuFallback = () -> showMenu(menuShotId);
+
+    private boolean canPickMenu() {
+        if (sheetOpen || zone != Z_CARDS || cardIndex >= cards.size()) return false;
+        Recs.Pick p = cards.get(cardIndex);
+        return p.photo == null && p.id > 0 && p.title != null;
+    }
+
+    private int menuItems() {
+        return Trakt.hasKey() ? 2 : 1;
+    }
+
+    /** The second item shows the stars once the title is marked watched (or rated) from here. */
+    private boolean stars(Recs.Pick p) {
+        String key = Recs.key(p);
+        return watched.contains(key) || rated.containsKey(key);
+    }
+
+    private void openPickMenu() {
+        handler.removeCallbacks(holdStart);
+        holdArmed = false;
+        if (menuOpen || !canPickMenu()) return;
+        sendRating();               // one still waiting, for another title, goes now
+        okHeld = true;              // the release of this press opens nothing
+        menuOpen = true;
+        menuPick = cards.get(cardIndex);
+        menuCard = cardIndex;
+        menuIndex = M_TRAILER;
+        menuSignedIn = Trakt.hasOAuth();
+        Float r = rated.get(Recs.key(menuPick));
+        starIndex = r == null ? 2 : Math.max(0, (int) Math.ceil(r) - 1);
+        aimMenu(true);
+        menuShot = menuSharp = null;
+        handler.removeCallbacks(focusBackground);   // the screen's copy would go stale
+        placeMenu();
+        menuBackDirty = true;
+        click.open();
+        captureBehind(++menuShotId);
+        wake();
+    }
+
+    /**
+     * The screen, copied full size (it stands in for the home screen while the menu fades), and from it a small copy at
+     * the glass's image size (Backdrop.GW × GH), blurred like Backdrop's photos (~35 px at full size) and dimmed a
+     * little: the menu fades in over it, and the panel's glass shows the same copy, so it bends what is really behind it
+     * (its own Scene: the shelf's glass keeps the photo). Without the copy within 250 ms (PixelCopy refused or slow),
+     * over a plain dim and the shelf's kind of glass.
+     */
+    private void captureBehind(int id) {
+        handler.postDelayed(menuFallback, 250);
+        int sw = Backdrop.GW, sh = Backdrop.GH;
+        Bitmap full = Bitmap.createBitmap(Math.max(1, w), Math.max(1, h), Bitmap.Config.ARGB_8888);
+        try {
+            PixelCopy.request(activity.getWindow(), full, result -> {
+                if (result == PixelCopy.SUCCESS && id == menuShotId && menuOpen) {
+                    int[] px = Backdrop.reduce(full, sw, sh, Math.round(8 * sw / (w / 4f)), 3);
+                    float keep = 1 - tone(0.1f, 0.3f);
+                    for (int i = 0; i < px.length; i++) {
+                        int c = px[i];
+                        px[i] = 0xFF000000 | Math.round(((c >> 16) & 255) * keep) << 16 | Math.round(((c >> 8) & 255) * keep) << 8
+                                | Math.round((c & 255) * keep);
+                    }
+                    if (menuScene == null) menuScene = new Scene(false);
+                    menuScene.setSize(w, h);
+                    menuScene.setGlassImage(px);
+                    menuShot = Bitmap.createBitmap(px, sw, sh, Bitmap.Config.ARGB_8888);
+                    menuSharp = full;
+                    menuBackDirty = true;
+                }
+                showMenu(id);
+            }, handler);
+        } catch (IllegalArgumentException e) {   // no surface yet
+            showMenu(id);
+        }
+    }
+
+    /** Starts the fade-in, once per opening (the copy or the fallback, whichever comes first). */
+    private void showMenu(int id) {
+        handler.removeCallbacks(menuFallback);
+        if (!menuOpen || id != menuShotId || menu.target == 1 || menuWarm > 0) return;
+        if (menuSharp != null) menuWarm = 2;    // see the frame: a warm-up frame first
+        else menu.target = 1;
+        menuDirty = true;
+        wake();
+        announceForAccessibility(menuLabel(menuIndex));
+    }
+
+    private void closePickMenu(boolean snap) {
+        if (!menuOpen && menu.value <= 0) return;
+        menuOpen = false;
+        menuWarm = 0;
+        handler.removeCallbacks(menuFallback);
+        if (running && zone == Z_CARDS) handler.postDelayed(focusBackground, FOCUS_REST_MS);
+        sendRating();
+        menu.target = 0;
+        if (snap) menu.snap(0);
+        menuDirty = true;
+        wake();
+    }
+
+    private void aimMenu(boolean snap) {
+        aim(menuFocus, menuIndex, snap);
+        aim(starFocus, menuIndex == M_WATCHED && menuPick != null && stars(menuPick) ? starIndex : -1, snap);
+        menuDirty = true;
+    }
+
+    private String menuLabel(int i) {
+        if (i == M_TRAILER) return Ui.tr("Watch trailer");
+        return menuPick != null && stars(menuPick) ? Ui.tr("Rate it on Trakt") : Ui.tr("Already watched");
+    }
+
+    /** Keys while the menu is open: ↑ ↓ between its items, ← → along the stars, OK, and Back closes it. */
+    private boolean menuKey(KeyEvent e, boolean down) {
+        switch (e.getKeyCode()) {
+            case KeyEvent.KEYCODE_DPAD_UP:
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                if (down) {
+                    int next = Math.max(0, Math.min(menuItems() - 1, menuIndex + (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1)));
+                    if (next != menuIndex) {
+                        menuIndex = next;
+                        aimMenu(false);
+                        click.move();
+                        announceForAccessibility(menuLabel(menuIndex));
+                    }
+                }
+                return true;
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                if (down && menuIndex == M_WATCHED && stars(menuPick)) {
+                    int next = Math.max(0, Math.min(4, starIndex + (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1)));
+                    if (next != starIndex) {
+                        starIndex = next;
+                        aimMenu(false);
+                        click.move();
+                    }
+                }
+                return true;
+            case KeyEvent.KEYCODE_DPAD_CENTER:
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                // On release, as elsewhere; the release of the press that opened the menu (okHeld) chooses nothing.
+                if (down) {
+                    if (e.getRepeatCount() == 0) {
+                        okDown = true;
+                        okHeld = false;
+                    }
+                } else {
+                    if (okDown && !okHeld && !e.isCanceled()) menuSelect();
+                    okDown = okHeld = false;
+                }
+                return true;
+            case KeyEvent.KEYCODE_BACK:
+                if (down) {
+                    if (e.getRepeatCount() == 0) backDown = true;
+                } else {
+                    if (backDown && !e.isCanceled()) {
+                        closePickMenu(false);
+                        click.move();
+                    }
+                    backDown = false;
+                }
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void menuSelect() {
+        Recs.Pick p = menuPick;
+        if (p == null) return;
+        if (menuIndex == M_TRAILER) {
+            click.open();
+            closePickMenu(true);
+            openTrailer(p);
+            return;
+        }
+        if (!menuSignedIn) {
+            showToast(Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."));
+            return;
+        }
+        String key = Recs.key(p);
+        click.open();
+        if (!stars(p)) {
+            watched.add(key);       // once: from now on OK rates
+            markWatched(p);
+        } else {
+            // A star once: that many stars; the same star again: half a star less (5, then 4.5, then 5…).
+            float star = starIndex + 1;
+            Float now = rated.get(key);
+            rated.put(key, now != null && now == star ? star - 0.5f : star);
+            ratePick = p;
+            handler.removeCallbacks(rateNow);
+            handler.postDelayed(rateNow, RATE_AFTER_MS);
+        }
+        aimMenu(false);
+    }
+
+    /** YouTube's results for the title's trailer, in the TV's language (in Russian: "<название> русский трейлер"). */
+    private void openTrailer(Recs.Pick p) {
+        String url = "https://www.youtube.com/results?search_query=" + Uri.encode(Ui.trf("{title} trailer", "title", p.title));
+        RectF r = menuCard < slots ? cardRects[menuCard] : screen;
+        if (HomeApps.open(activity, HomeApps.app(YOUTUBE, "YouTube", url), this, Math.round(r.left), Math.round(r.top),
+                Math.round(r.width()), Math.round(r.height()))) return;
+        try {   // no YouTube for TV: whichever app takes YouTube's links
+            activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (ActivityNotFoundException | SecurityException e) {
+            showToast(Ui.trf("Couldn't open {app}.", "app", "YouTube"));
+        }
+    }
+
+    /** Sent once (`watched` keeps a second press from sending it again); if Trakt refuses, the item comes back. */
+    private void markWatched(Recs.Pick p) {
+        String key = Recs.key(p), kind = p.kind, title = p.title;
+        int id = p.id;
+        LOADER.execute(() -> {
+            try {
+                Trakt.markWatched(kind, id);
+                handler.post(() -> showToast(Ui.trf("Marked as watched on Trakt: {title}", "title", title)));
+            } catch (Exception e) {
+                AppLog.w("Trakt watched: " + e.getMessage());
+                handler.post(() -> {
+                    watched.remove(key);
+                    rated.remove(key);
+                    if (ratePick != null && Recs.key(ratePick).equals(key)) {
+                        ratePick = null;
+                        handler.removeCallbacks(rateNow);
+                    }
+                    showToast(Ui.tr("Trakt didn't answer. Try again in a moment."));
+                    aimMenu(false);
+                });
+            }
+        });
+    }
+
+    /** The stars chosen, to Trakt (1 to 10: a star is 2), once: never again while they're the ones already sent. */
+    private void sendRating() {
+        handler.removeCallbacks(rateNow);
+        Recs.Pick p = ratePick;
+        ratePick = null;
+        if (p == null) return;
+        String key = Recs.key(p), kind = p.kind, title = p.title;
+        Float stars = rated.get(key);
+        if (stars == null || stars.equals(ratedSent.get(key))) return;
+        ratedSent.put(key, stars);
+        int id = p.id, value = Math.round(stars * 2);
+        String shown = starsText(stars);
+        LOADER.execute(() -> {
+            try {
+                Trakt.rate(kind, id, value);
+                handler.post(() -> showToast(Ui.trf("Rated {stars} of 5 on Trakt: {title}", "stars", shown, "title", title)));
+            } catch (Exception e) {
+                AppLog.w("Trakt rating: " + e.getMessage());
+                handler.post(() -> {
+                    if (stars.equals(ratedSent.get(key))) ratedSent.remove(key);   // the same stars may go again
+                    showToast(Ui.tr("Trakt didn't answer. Try again in a moment."));
+                });
+            }
+        });
+    }
+
+    private static String starsText(float stars) {
+        java.text.NumberFormat f = java.text.NumberFormat.getNumberInstance(Ui.locale());
+        f.setMaximumFractionDigits(1);
+        return f.format(stars);
+    }
+
+    private boolean menuCardShown() {
+        return menuCard < slots && menuCard < cards.size() && cards.get(menuCard) == menuPick;
+    }
+
+    /**
+     * Where the panel goes: beside the card (as drawn focused, 5% larger), on its right if there's room, else on its
+     * left; level with its top. Its two layers take the panel's place, with room for its shadow, and grow from the card's
+     * side.
+     */
+    private void placeMenu() {
+        boolean card = menuCardShown();
+        int items = menuItems();
+        float pw = MENU_W * k, ph = items * MENU_ITEM_H * k + (items - 1) * MENU_GAP * k + 2 * MENU_PAD * k;
+        float bw = card ? cardW[menuCard] : wideW, cx = card ? cardX[menuCard] + bw / 2 : w / 2f, half = bw * 1.05f / 2;
+        float top = L_CARDS_TOP * k + L_CARD_H * k * (0.5f - 1.05f / 2) - 6 * k;
+        menuRight = cx + half + 36 * k + pw <= w - 60 * k;
+        float left = menuRight ? cx + half + 36 * k : Math.max(60 * k, cx - half - 36 * k - pw);
+        menuRect.set(left, top, left + pw, top + ph);
+        snap(menuRect);
+        int m = Math.round(60 * k);
+        menuBounds.set(Math.round(menuRect.left) - m, Math.round(menuRect.top) - m, Math.round(menuRect.right) + m,
+                Math.round(menuRect.bottom) + 2 * m);
+        for (View v : new View[] {menuGlass, menuItemsLayer}) {
+            measure(v, menuBounds.width(), menuBounds.height());
+            v.layout(menuBounds.left, menuBounds.top, menuBounds.right, menuBounds.bottom);
+            v.setPivotX(menuRight ? m : menuBounds.width() - m);
+            v.setPivotY(m);
+        }
+    }
+
+    /** Behind the menu: the screen blurred and dimmed, and the card it belongs to sharp where it was. */
+    private void drawMenuBack(Canvas c) {
+        if (menuPick == null) return;
+        if (menuShot != null) {
+            c.drawBitmap(menuShot, null, screen, shotPaint);
+        } else {
+            fill.setShader(null);
+            fill.setColor(0x8C000000);
+            c.drawRect(screen, fill);
+        }
+        if (menuCardShown()) drawLightCard(c, menuCard);
+    }
+
+    /**
+     * The panel: Liquid Glass over what is really behind it (the menu's blurred copy of the screen), clear but for a
+     * faint tint, bending it near the rim and catching the light there; a soft shadow under it.
+     */
+    private void drawMenuGlass(Canvas c) {
+        float radius = (MENU_ITEM_H / 2 + MENU_PAD) * k;
+        tmp.set(menuRect);
+        tmp.offset(0, 18 * k);
+        shadow.setColor(tone(0x14000000, 0x40000000));
+        shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
+        boolean behind = menuShot != null && menuScene != null;
+        (behind ? menuScene : scene).liquid(c, menuRect, radius, tone(0xFFFFFFFF, SMOKE), behind ? tone(0.14f, 0.1f) : tone(0.42f, 0.12f),
+                tone(0.04f, 0.06f), tone(30, 34) * k, tone(22, 28) * k, tone(0.65f, 0.95f), 1);
+    }
+
+    /** The items, focused the tvOS way (a white pill); the second one, once watched, five stars. */
+    private void drawMenuItems(Canvas c) {
+        if (menuPick == null) return;
+        float ih = MENU_ITEM_H * k, pad = MENU_PAD * k, gap = MENU_GAP * k;
+        for (int i = 0; i < menuItems(); i++) {
+            float f = Ui.clamp(menuFocus[i].value), y = menuRect.top + pad + i * (ih + gap);
+            cell.set(menuRect.left + pad, y, menuRect.right - pad, y + ih);
+            if (f > 0.01f) {
+                tmp.set(cell);
+                tmp.offset(0, 6 * k * f);
+                shadow.setColor(Ui.alpha(0xFF000000, tone(0.12f, 0.3f) * f));
+                shadows.draw(c, tmp, ih / 2, SHADOW_BLUR * k, shadow);
+                fill.setShader(null);
+                fill.setColor(Ui.alpha(0xFFFFFFFF, f));
+                c.drawRoundRect(cell, ih / 2, ih / 2, fill);
+            }
+            int ink = i == M_WATCHED && !menuSignedIn ? tone(L_FAINT, 0xFF8E8E93) : blend(tone(L_INK, WHITE), L_INK, f);
+            float cy = cell.centerY(), textX = cell.left + 84 * k;
+            Symbols.draw(getContext(), c, i == M_TRAILER ? "play" : "check", cell.left + 46 * k, cy, 30 * k, ink);
+            if (i == M_WATCHED && stars(menuPick)) {
+                drawStars(c, textX, cy, ink);
+            } else {
+                menuText.setColor(ink);
+                c.drawText(menuLabel(i), textX, cy + Ui.halfCap(menuText), menuText);
+            }
+        }
+    }
+
+    /** Five stars from x: filled (or half) up to the rating, the focused one larger; the rating's number at the end. */
+    private void drawStars(Canvas c, float x, float cy, int ink) {
+        Float value = rated.get(Recs.key(menuPick));
+        float stars = value == null ? 0 : value, size = 38 * k, step = 56 * k;
+        for (int j = 0; j < 5; j++) {
+            float g = Ui.clamp(starFocus[j].value), sz = size * (1 + 0.3f * g), have = Ui.clamp(stars - j);
+            c.save();
+            c.translate(x + size / 2 + j * step, cy);
+            c.scale(sz, sz);
+            if (have > 0) {
+                starPaint.setColor(0xFFFFCC00);
+                if (have < 1) {
+                    c.save();
+                    c.clipRect(-1, -1, 0, 1);   // the left half
+                    c.drawPath(star, starPaint);
+                    c.restore();
+                } else {
+                    c.drawPath(star, starPaint);
+                }
+            }
+            starLine.setColor(have >= 1 ? 0xFFFFCC00 : Ui.alpha(ink, 0.75f));
+            c.drawPath(star, starLine);
+            c.restore();
+        }
+        if (stars > 0) {
+            menuText.setColor(ink);
+            c.drawText(starsText(stars), x + 5 * step + 8 * k, cy + Ui.halfCap(menuText), menuText);
+        }
     }
 
     // MARK: - Moving apps on the shelf
@@ -3150,7 +3626,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         while (cardFocus.size() < n) {
             cardFocus.add(new Spring(0.32f, 0.78f, 0));
             cardWide.add(new Spring(0.4f, 0.7f, 0, 0.56f));   // wide in 0.22 s, ~5% over at 0.3 s, then softly back
-            cardLag.add(new Spring(0.6f, 1, 0));
         }
         if (cardRects.length < n) {
             int size = Math.max(n, cardRects.length * 2);
@@ -3167,7 +3642,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             for (int i = 0; i < cardFocus.size(); i++) {
                 cardFocus.get(i).snap(0);
                 cardWide.get(i).snap(0);
-                cardLag.get(i).snap(0);
             }
             rowScroll.snap(0);
         }
@@ -3301,25 +3775,36 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (i == tab) lTabOn.setColor(blend(tone(L_INK, WHITE), L_INK, focus));   // always dark on the white pill
             c.drawText(tabs()[i], r.centerX() - p.measureText(tabs()[i]) / 2, r.centerY() + Ui.halfCap(p), p);
         }
-        // The row, from each card's width this frame (never under the tall one). The stretch comes out of the gaps,
-        // like jelly: the next card is pushed (`push`) and the one after it stays. What is off screen isn't drawn, and
-        // the lifted card goes last.
-        float x = MARGIN * k - rowScroll.value + rowNudge.value, reach = 60 * k, delta = wideW - tallW, before = 0;
+        // The row, from each card's width this frame (never under the tall one); x0 is each card's place without the
+        // stretch. The card the focus goes to pushes the next one only by what would bring their edges (as drawn, the
+        // focused one 5% larger) closer than their gap once settled: so it moves with the stretch, not before, and the
+        // card after it stays. What is off screen isn't drawn, and the lifted card goes last.
+        float x0 = MARGIN * k - rowScroll.value + rowNudge.value, reach = 60 * k, delta = wideW - tallW, pushed = 0;
         int top = -1;
         for (int i = 0; i < slots; i++) {
             float v = cardFocus.get(i).value, wide = cardWide.get(i).value, over = delta * Math.max(0, wide - 1);
             if (v > 0.02f && (top < 0 || v > cardFocus.get(top).value)) top = i;
-            cardX[i] = x;
-            cardW[i] = tallW + delta * Math.max(0, wide);
-            float push = Math.max(0, PUSH_STRETCH * over + PUSH_GROW * (v - cardLag.get(i).value) * cardW[i] * 0.025f);
-            x += cardW[i] + cardGap - over + push - before;
-            before = push;
+            float bw = tallW + delta * Math.max(0, wide), next = x0 + bw - over + cardGap;
+            cardX[i] = x0 + pushed;
+            cardW[i] = bw;
+            pushed = 0;
+            if (i + 1 < slots && cardFocus.get(i).target == 1) {
+                float nv = cardFocus.get(i + 1).value, nw = tallW + delta * Math.max(0, cardWide.get(i + 1).value);
+                float right = x0 + bw * (2 + 0.05f * v) / 2, left = next - nw * 0.05f * nv / 2;
+                pushed = Math.max(0, right + cardGap - restGrowth(i) - restGrowth(i + 1) - left);
+            }
+            x0 = next;
         }
         for (int i = 0; i < slots; i++) {
             if (i != top && cardX[i] + cardW[i] > -reach && cardX[i] < w + reach) drawLightCard(c, i);
         }
         if (top >= 0) drawLightCard(c, top);
         if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
+    }
+
+    /** How far a card, once its springs settle, reaches past its place on each side (the focused one is 5% larger). */
+    private float restGrowth(int i) {
+        return cardFocus.get(i).target * 0.025f * (tallW + (wideW - tallW) * cardWide.get(i).target);
     }
 
     private boolean picksOn() {

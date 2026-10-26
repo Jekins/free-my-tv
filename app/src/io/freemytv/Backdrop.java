@@ -247,7 +247,7 @@ final class Backdrop {
     }
 
     /** Halved at each step (a true average, no aliasing), then blurred (box passes of radius r). */
-    private static int[] reduce(Bitmap full, int w, int h, int radius, int passes) {
+    static int[] reduce(Bitmap full, int w, int h, int radius, int passes) {
         Bitmap b = full;
         while (b.getWidth() / 2 >= w * 1.5f) {
             Bitmap half = Bitmap.createScaledBitmap(b, b.getWidth() / 2, b.getHeight() / 2, true);
@@ -259,12 +259,17 @@ final class Backdrop {
         int[] px = new int[w * h];
         small.getPixels(px, 0, w, 0, 0, w, h);
         small.recycle();
+        blur(px, w, h, radius, passes);
+        return px;
+    }
+
+    /** Box blur of opaque pixels in place: `passes` of radius r in both directions (three look like a Gaussian). */
+    static void blur(int[] px, int w, int h, int radius, int passes) {
         int[] tmp = new int[px.length];
         for (int pass = 0; pass < passes; pass++) {
             box(px, tmp, w, h, radius, true);
             box(tmp, px, w, h, radius, false);
         }
-        return px;
     }
 
     /** Moving average of radius r in one direction, repeating the edge pixels. */

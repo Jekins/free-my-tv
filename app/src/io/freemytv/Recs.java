@@ -67,7 +67,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 10;
+    private static final int CACHE_VERSION = 11;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
@@ -798,6 +798,16 @@ final class Recs {
         return String.format(Locale.US, "%04d-%02d-%02d", cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH));
     }
 
+    /** Noon of a TMDB date ("2025-03-12") here, so no time zone moves it a day; 0 when there is none. */
+    private static long dayAt(String date) {
+        if (date == null || !date.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) return 0;
+        Calendar cal = Calendar.getInstance();
+        cal.clear();
+        cal.set(Integer.parseInt(date.substring(0, 4)), Integer.parseInt(date.substring(5, 7)) - 1,
+                Integer.parseInt(date.substring(8, 10)), 12, 0);
+        return cal.getTimeInMillis();
+    }
+
     private static void add(List<Pick> list, JSONObject o, String kind) {
         String backdrop = o.optString("backdrop_path", "");
         if (backdrop.isEmpty() || "null".equals(backdrop)) return;
@@ -819,7 +829,10 @@ final class Recs {
         return false;
     }
 
-    /** Genre, runtime (or seasons) and the service it's on, among the ones the TV has. */
+    /**
+     * A movie's year, genre and runtime; a show's genre, seasons and the day its last episode aired; and the service it's
+     * on, among the ones the TV has.
+     */
     private void fetchDetails(Pick p) throws Exception {
         JSONObject o = get("/" + p.kind + "/" + p.id
                 + "?language=" + lang() + "&append_to_response=" + (FILMIX_ONLY ? "images" : "watch/providers,images")
@@ -836,6 +849,7 @@ final class Recs {
         if (best != null) p.backdrop = best;
         List<String> parts = new ArrayList<>();
         JSONArray genres = o.optJSONArray("genres");
+        if (p.kind.equals("movie") && p.year > 0) parts.add(String.valueOf(p.year));
         if (p.kind.equals("tv")) parts.add(Ui.tr("Series"));
         if (genres != null && genres.length() > 0) {
             String name = genres.getJSONObject(0).optString("name");
@@ -847,6 +861,9 @@ final class Recs {
         } else {
             int seasons = o.optInt("number_of_seasons");
             if (seasons > 0) parts.add(Ui.plural("plural|one:{n} season|other:{n} seasons", seasons));
+            JSONObject last = o.optJSONObject("last_episode_to_air");
+            long aired = dayAt(last != null ? last.optString("air_date") : o.optString("last_air_date"));
+            if (aired > 0) parts.add(Ui.trf("last episode {date}", "date", Ui.datePattern("format|MMM d, yyyy").format(aired)));
         }
         JSONObject wp = o.optJSONObject("watch/providers");
         JSONObject br = wp == null ? null : wp.optJSONObject("results") == null ? null : wp.optJSONObject("results").optJSONObject(REGION);

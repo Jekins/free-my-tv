@@ -193,6 +193,40 @@ final class Trakt {
         }
     }
 
+    /**
+     * Marks a title (`kind` "movie" or "tv", by its TMDB id) watched now in the signed-in person's history; a show, every
+     * episode aired so far. Network: never on the main thread.
+     */
+    static void markWatched(String kind, int tmdbId) throws IOException {
+        sync("/sync/history", kind, tmdbId, 0);
+    }
+
+    /** Rates a title on Trakt's 1 to 10 scale (a star is 2). Network: never on the main thread. */
+    static void rate(String kind, int tmdbId, int rating) throws IOException {
+        sync("/sync/ratings", kind, tmdbId, Math.max(1, Math.min(10, rating)));
+    }
+
+    private static void sync(String path, String kind, int tmdbId, int rating) throws IOException {
+        String clientId = Config.TRAKT_CLIENT_ID.trim();
+        if (clientId.isEmpty() || !hasOAuth()) throw new IOException("not signed in to Trakt");
+        String list = kind.equals("movie") ? "movies" : "shows";
+        JSONObject body;
+        try {
+            JSONObject item = new JSONObject().put("ids", new JSONObject().put("tmdb", tmdbId));
+            if (rating > 0) item.put("rating", rating);
+            body = new JSONObject().put(list, new JSONArray().put(item));
+        } catch (org.json.JSONException e) {
+            throw new IOException("Trakt request body");
+        }
+        int[] status = new int[1];
+        JSONObject answer = post(API + path, body, clientId, access(false), status);
+        if (status[0] == 401) answer = post(API + path, body, clientId, access(true), status);
+        if (status[0] != 200 && status[0] != 201) throw new IOException("Trakt returned HTTP " + status[0]);
+        JSONObject missing = answer.optJSONObject("not_found");
+        JSONArray lost = missing == null ? null : missing.optJSONArray(list);
+        if (lost != null && lost.length() > 0) throw new IOException("Trakt doesn't know " + kind + " " + tmdbId);
+    }
+
     private static JSONObject body(String... pairs) throws IOException {
         JSONObject o = new JSONObject();
         try {
@@ -364,8 +398,15 @@ final class Trakt {
         return o;
     }
 
-    /** POSTs JSON; `status` gets the HTTP code, and the answer is its JSON (empty when it has none). */
     private static JSONObject post(String url, JSONObject body, String clientId, int[] status) throws IOException {
+        return post(url, body, clientId, null, status);
+    }
+
+    /**
+     * POSTs JSON (as the signed-in person with a `token`); `status` gets the HTTP code, and the answer is its JSON (empty
+     * when it has none).
+     */
+    private static JSONObject post(String url, JSONObject body, String clientId, String token, int[] status) throws IOException {
         byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(8000);
@@ -376,6 +417,7 @@ final class Trakt {
         c.setRequestProperty("trakt-api-version", "2");
         c.setRequestProperty("trakt-api-key", clientId);
         c.setRequestProperty("User-Agent", "FreeMyTV/1.0");
+        if (token != null && !token.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + token);
         try (OutputStream out = c.getOutputStream()) {
             out.write(payload);
         }
@@ -387,7 +429,7 @@ final class Trakt {
             try {
                 return text.trim().startsWith("{") ? new JSONObject(text) : new JSONObject();
             } catch (org.json.JSONException e) {
-                throw new IOException("Trakt auth returned invalid JSON");
+                throw new IOException("Trakt returned invalid JSON");
             }
         } finally {
             c.disconnect();
