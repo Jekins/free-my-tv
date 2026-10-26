@@ -34,11 +34,8 @@ final class Trakt {
         final int traktId;
         final float rating;     // Trakt's average (0 to 10)
         final int votes;
-        final List<String> genres;   // Trakt's slugs ("science-fiction"), with extended=full
-        final String status;    // a show's ("returning series", "ended"…), with extended=full; "" for a movie
 
-        Item(String type, String title, int year, int tmdbId, int traktId, float rating, int votes, List<String> genres,
-                String status) {
+        Item(String type, String title, int year, int tmdbId, int traktId, float rating, int votes) {
             this.type = type;
             this.title = title;
             this.year = year;
@@ -46,8 +43,6 @@ final class Trakt {
             this.traktId = traktId;
             this.rating = rating;
             this.votes = votes;
-            this.genres = genres;
-            this.status = status;
         }
     }
 
@@ -397,6 +392,41 @@ final class Trakt {
     }
 
     /**
+     * Up to `limit` movies or shows (`type`: "movies" or "shows") from `source` (the person's "recommendations", or
+     * Trakt's "trending", "popular" or "anticipated"), with Trakt's filters in `query` ("&genres=comedy,-horror&…") and
+     * the ones the person watched left out: as a smart list of theirs would have them, through the preview the Trakt
+     * app shows while one is being made (newer than the API's documentation: it applies every filter, the parental
+     * guide's and genres that must all match too). If that's gone (HTTP 400, 404 or 405), the documented lists, which
+     * take most of them. Ranked by Trakt; each with its rating (extended=full). Throws when Trakt can't be asked.
+     */
+    static List<Item> discover(String source, String type, String query, int limit) throws IOException {
+        String common = "extended=full&ignore_watched=true&ignore_watchlisted=true" + query;
+        JSONArray array;
+        try {
+            try {
+                array = getArray("/smart-lists/preview/items?source=" + source + "&media_type=" + type + "&limit=" + limit
+                        + "&" + common, true);
+            } catch (IOException e) {
+                String m = String.valueOf(e.getMessage());
+                if (!m.contains("HTTP 400") && !m.contains("HTTP 404") && !m.contains("HTTP 405")) throw e;
+                AppLog.w("Trakt preview: " + m);
+                String path = source.equals("recommendations") ? "/recommendations/" + type + "?ignore_collected=true&"
+                        : "/" + type + "/" + source + "?";
+                array = getArray(path + "limit=" + limit + "&" + common, true);
+            }
+        } catch (org.json.JSONException e) {
+            throw new IOException("Trakt discover: " + e.getMessage());
+        }
+        String one = "shows".equals(type) ? "show" : "movie";
+        List<Item> items = new ArrayList<>();
+        for (int i = 0; i < array.length(); i++) {
+            Item item = parseItem(array.optJSONObject(i), one);   // {type, movie|show, rank}, {watchers, movie} or bare
+            if (item != null && item.type.equals(one)) items.add(item);
+        }
+        return items;
+    }
+
+    /**
      * Trakt's search for movies and shows (the client ID is enough), in any language Trakt has their titles in. Its
      * matching minds the case of Cyrillic letters ("дюна" finds nothing, "Дюна" finds Dune), so the query starts with a
      * capital, as titles do. Trakt scores many answers alike: the most watched go first (by votes), its own order
@@ -586,11 +616,7 @@ final class Trakt {
         int tmdbId = ids != null ? ids.optInt("tmdb") : 0;
         int traktId = ids != null ? ids.optInt("trakt") : 0;
         if (tmdbId <= 0 || title.isEmpty()) return null;
-        List<String> genres = new ArrayList<>();
-        JSONArray g = media.optJSONArray("genres");
-        for (int i = 0; g != null && i < g.length(); i++) genres.add(g.optString(i));
-        return new Item(type, title, year, tmdbId, traktId, (float) media.optDouble("rating", 0), media.optInt("votes"),
-                genres, media.optString("status"));
+        return new Item(type, title, year, tmdbId, traktId, (float) media.optDouble("rating", 0), media.optInt("votes"));
     }
 
     private static JSONArray getArray(String path, boolean oauth) throws IOException, org.json.JSONException {

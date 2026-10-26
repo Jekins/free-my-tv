@@ -205,11 +205,19 @@ episodes out since you last watched (the last 20 shows you watched, an episode f
 many you haven't seen. It follows Trakt every half hour. All of it shows, Filmix's or not: a title Filmix hasn't says so
 on its card, as in the search.
 
-Holding OK on the Explore tab opens its filters: type (movies, shows or both), year (by decade), rating (6, 7 or 8 and
-up, Trakt's), genre and, with shows only, status (on the air, coming, ended, canceled), each *All* at first. ← → change
-a filter; OK or Back applies them. Trakt filters its recommendations itself, so a filter reaches past the unfiltered
-list's end; a tab's own list is filtered on the TV. Filtered, Explore has a blue dot. Movies and Shows always show their
-source whole.
+↑ on the Explore tab (a chevron over it says so), or OK held there, opens its filters, as Trakt's smart lists have
+them: on the left their sections, each saying what it's set to, then *Reset* and *Show* as buttons; on the right every
+option of the focused one at once, in even columns. Type (movies, shows or both: Trakt has no cartoon or anime type, so
+animation and anime are genres); sort (your recommendations, or Trakt's trending, popular or anticipated titles); genres,
+the main ones and the others, each alphabetical (any of them or all at once; OK once wants a genre, twice leaves it out,
+three times neither); years (the decades in a list, the focused one's years beside it: a
+decade, a year, or the span between two years picked); statuses (Trakt's: ended, continuing and canceled first); the least each rating may give (Trakt, IMDb, TMDB, Rotten Tomatoes'
+critics and audience, Metacritic, Letterboxd); and how much sex and nudity, violence, profanity, alcohol and drugs, and
+frightening scenes IMDb's parental guide may report (with titles it hasn't rated hidden or shown). Titles you watched
+never show. Back goes from the options to the sections, and from there closes the filters and applies them, as *Show*
+does. Trakt applies them all (through the preview its app uses for a smart list being made, or its documented lists if
+that's gone), so a filter reaches past the unfiltered list's end. Filtered, Explore has a yellow dot. Movies and Shows
+always show their source whole.
 
 The magnifier before the tabs searches Trakt (its client ID is enough, no sign-in): OK on it turns the tabs into a field
 and brings up the TV's keyboard. A moment after the typing stops, the

@@ -40,8 +40,8 @@ import java.util.concurrent.Executors;
  * Globoplay...), via TMDB (an open movie database that knows what streams where in each country). Each row (Explore,
  * Movies, Shows) shows four (the fourth's edge past the other three); the focus on the last card asks for three more
  * ({@link #more}). With Filmix, a title is looked up in Filmix only when its row gets to it: the rest wait in a queue.
- * Explore can be filtered (movies or shows, year, rating, genre, a show's status): Trakt filters its recommendations,
- * and a tab's own list is filtered here.
+ * Explore can be filtered as a Trakt smart list is (where from: recommendations, trending, popular or anticipated;
+ * movies or shows, genres in and out, years, statuses, ratings, the parental guide): Trakt applies it all.
  * The search field's row shows Trakt's answers for what is typed, each looked up the same way ({@link #search}).
  * "Watch" opens the service's app.
  *
@@ -79,91 +79,263 @@ final class Recs {
     static final int SEARCH_IDLE = 0, SEARCH_ASKING = 1, SEARCH_FILLING = 2, SEARCH_DONE = 3, SEARCH_FAILED = 4;
 
     /**
-     * Explore's filters (hold OK on its tab): indexes into TYPES, YEARS, RATINGS, GENRES and STATUSES (shows only), 0 =
-     * any. Trakt applies them to its recommendations; a tab's own list is filtered here ({@link #matches}). Saved by
-     * value, so the lists can change.
+     * Explore's filters (hold OK on its tab), as Trakt's smart lists have them: where the titles come from (`source`,
+     * SOURCES: the person's recommendations or one of Trakt's lists of the moment), the type, genres wanted and genres
+     * left out, a year or a span of years, statuses, the least each rating source may give, and how much of each kind
+     * of content IMDb's parental guide may report. Trakt applies them all (Trakt.discover). Saved by value, so the lists
+     * can change. Mutable for the filters' panel, which edits a copy; the one a row has is never changed.
      */
     static final class Filter {
         /** Movies and shows, movies only ("movie"), or shows only ("tv"). */
         static final String[] TYPES = {null, "movie", "tv"};
-        static final int SHOWS = 2;
-        /** Decades by their first year; 1900: before 1990. */
-        static final int[] YEARS = {0, 2020, 2010, 2000, 1990, 1900};
-        /** Trakt's rating (0 to 10), at least. */
-        static final int[] RATINGS = {0, 6, 7, 8};
-        /** Trakt's genre slugs. */
-        static final String[] GENRES = {null, "action", "adventure", "animation", "comedy", "crime", "documentary", "drama",
-            "family", "fantasy", "history", "horror", "mystery", "romance", "science-fiction", "thriller", "war", "western"};
-        /** Shows, as on trakt.tv: on the air, still to come, ended, canceled (Trakt's statuses, any of them). */
-        static final String[] STATUSES = {null, "returning series,continuing", "upcoming,planned,in production,pilot", "ended",
-            "canceled"};
-        static final Filter ANY = new Filter(0, 0, 0, 0, 0);
+        static final int MOVIES = 1, SHOWS = 2;
+        /** Trakt's sources: the person's recommendations, then its trending, popular and anticipated titles. */
+        static final String[] SOURCES = {"recommendations", "trending", "popular", "anticipated"};
+        /** Trakt's genre slugs, its movies' and its shows' (not "none"): bits of `genres` and `without`. */
+        static final String[] GENRES = {"action", "adventure", "animation", "anime", "biography", "children", "comedy",
+            "crime", "documentary", "donghua", "drama", "family", "fantasy", "game-show", "history", "holiday",
+            "home-and-garden", "horror", "mini-series", "music", "musical", "mystery", "news", "reality", "romance",
+            "science-fiction", "short", "soap", "special-interest", "sporting-event", "superhero", "suspense", "talk-show",
+            "thriller", "war", "western"};
+        /** Trakt's statuses, a movie's and a show's (bits of `statuses`): MOVIE_STATUSES and SHOW_STATUSES say whose. */
+        static final String[] STATUSES = {"released", "returning series", "continuing", "in production", "post production",
+            "planned", "upcoming", "pilot", "rumored", "canceled", "ended"};
+        static final int MOVIE_STATUSES = bits(0, 3, 4, 5, 8, 9), SHOW_STATUSES = bits(1, 2, 3, 5, 6, 7, 9, 10);
+        /**
+         * On the air: Trakt gives ongoing shows "returning series" and almost never "continuing" (none of its popular
+         * shows, none of the person's recommendations), so the two always go together.
+         */
+        static final int ONGOING = bits(1, 2);
+        /** The rating sources, by Trakt's parameter; the least each may give (RATING_MIN, in its own scale). */
+        static final String[] RATINGS = {"ratings", "imdb_ratings", "tmdb_ratings", "rt_meters", "rt_user_meters",
+            "metascores", "letterboxd_ratings"};
+        static final float[][] RATING_MIN = {{50, 60, 70, 80, 90}, {5, 6, 7, 8, 9}, {5, 6, 7, 8, 9}, {50, 60, 70, 80, 90},
+            {50, 60, 70, 80, 90}, {50, 60, 70, 80, 90}, {2.5f, 3, 3.5f, 4, 4.5f}};
+        static final float[] RATING_TOP = {100, 10, 10, 100, 100, 100, 5};
+        /** IMDb's parental guide through Trakt: its kinds of content. Each allows up to a level: 1 moderate, 2 mild, 3 none. */
+        static final String[] PARENTAL = {"nudity", "violence", "profanity", "alcohol", "frightening"};
 
-        final int type, year, rating, genre, status;
+        int type, source;
+        long genres, without;           // GENRES wanted (any of them, or all with allGenres) and left out
+        boolean allGenres;
+        int yearFrom, yearTo;           // 0: any year
+        int statuses;                   // bits of STATUSES: any of them
+        final int[] ratings = new int[RATINGS.length];     // 0: any, else 1 + an index into RATING_MIN
+        final int[] parental = new int[PARENTAL.length];   // 0: any
+        boolean unrated;                // with a parental filter, titles the guide hasn't rated stay
 
-        /** A status only with shows only (the only ones that have one). */
-        Filter(int type, int year, int rating, int genre, int status) {
-            this.type = type;
-            this.year = year;
-            this.rating = rating;
-            this.genre = genre;
-            this.status = type == SHOWS ? status : 0;
+        Filter copy() {
+            Filter f = new Filter();
+            f.type = type;
+            f.source = source;
+            f.genres = genres;
+            f.without = without;
+            f.allGenres = allGenres;
+            f.yearFrom = yearFrom;
+            f.yearTo = yearTo;
+            f.statuses = statuses;
+            System.arraycopy(ratings, 0, f.ratings, 0, ratings.length);
+            System.arraycopy(parental, 0, f.parental, 0, parental.length);
+            f.unrated = unrated;
+            return f;
         }
 
         boolean none() {
-            return type == 0 && year == 0 && rating == 0 && genre == 0 && status == 0;
+            if (type != 0 || source != 0 || genres != 0 || without != 0 || yearFrom != 0 || statuses != 0) return false;
+            for (int r : ratings) if (r != 0) return false;
+            return !restricted();
         }
 
-        /** Has `kind`'s titles ("movie" or "tv"). */
+        /** A kind of content is limited. */
+        boolean restricted() {
+            for (int p : parental) if (p != 0) return true;
+            return false;
+        }
+
+        /** The statuses a type has: a movie's ("movie"), a show's ("tv"), or both (null). */
+        static int statusesOf(String kind) {
+            return kind == null ? MOVIE_STATUSES | SHOW_STATUSES : kind.equals("movie") ? MOVIE_STATUSES : SHOW_STATUSES;
+        }
+
+        /** Another type: the statuses it can't have go. */
+        void setType(int t) {
+            type = t;
+            statuses &= statusesOf(TYPES[t]);
+        }
+
+        /** Has `kind`'s titles ("movie" or "tv"): its type, and one of its statuses if statuses are chosen. */
         boolean takes(String kind) {
-            return type == 0 || TYPES[type].equals(kind);
+            if (type != 0 && !TYPES[type].equals(kind)) return false;
+            return statuses == 0 || (statuses & statusesOf(kind)) != 0;
         }
 
-        /** A title of a list (Trakt's, with extended=full) that passes them, as Trakt's own filters would. */
-        boolean matches(Trakt.Item item) {
-            if (year > 0) {
-                int from = YEARS[year];
-                if (from == 1900 ? item.year <= 0 || item.year >= 1990 : item.year < from || item.year > from + 9) return false;
-            }
-            if (rating > 0 && item.rating < RATINGS[rating]) return false;
-            if (genre > 0 && !item.genres.contains(GENRES[genre])) return false;
-            return status == 0 || Arrays.asList(STATUSES[status].split(",")).contains(item.status);
+        String source() {
+            return SOURCES[source];
         }
 
-        /** Trakt's query parameters for `kind`'s recommendations ("movie" or "tv"). */
+        /** Trakt's query parameters for `kind`'s titles ("movie" or "tv"), each starting with "&". */
         String query(String kind) {
             StringBuilder q = new StringBuilder();
-            if (year > 0) {
-                int from = YEARS[year];
-                q.append("&years=").append(from == 1900 ? "1900-1989" : from + "-" + (from + 9));
+            if (genres != 0 || without != 0) {
+                q.append("&genres=").append(genreList());
+                if (allGenres && Long.bitCount(genres) > 1) q.append("&genres_operator=and");
             }
-            if (rating > 0) q.append("&ratings=").append(RATINGS[rating] * 10).append("-100");
-            if (genre > 0) q.append("&genres=").append(GENRES[genre]);
-            if (status > 0 && kind.equals("tv")) q.append("&statuses=").append(STATUSES[status].replace(" ", "%20"));
+            if (yearFrom > 0) q.append("&years=").append(yearFrom).append('-').append(yearTo);   // one year too: Y-Y
+            int s = statuses & statusesOf(kind);
+            if (s != 0) {
+                StringBuilder v = new StringBuilder();
+                for (int i = 0; i < STATUSES.length; i++) {
+                    if ((s & 1 << i) != 0) v.append(v.length() > 0 ? "," : "").append(STATUSES[i].replace(" ", "%20"));
+                }
+                q.append("&statuses=").append(v);
+            }
+            for (int i = 0; i < RATINGS.length; i++) {
+                if (ratings[i] == 0) continue;
+                q.append('&').append(RATINGS[i]).append('=').append(number(RATING_MIN[i][ratings[i] - 1])).append('-')
+                        .append(number(RATING_TOP[i]));
+            }
+            for (int i = 0; i < PARENTAL.length; i++) {
+                if (parental[i] != 0) q.append("&parental_").append(PARENTAL[i]).append("=0-").append(3 - parental[i]);
+            }
+            if (restricted()) q.append("&parental_include_unrated=").append(unrated);
             return q.toString();
         }
 
-        String saved() {
-            return (type == 0 ? "" : TYPES[type]) + "|" + YEARS[year] + "|" + RATINGS[rating] + "|"
-                    + (genre == 0 ? "" : GENRES[genre]) + "|" + status;
-        }
-
-        static Filter parse(String saved) {
-            String[] v = saved == null ? new String[0] : saved.split("\\|", -1);
-            if (v.length != 5) return ANY;
-            try {
-                return new Filter(Math.max(0, Arrays.asList(TYPES).indexOf(v[0].isEmpty() ? null : v[0])),
-                        indexOf(YEARS, Integer.parseInt(v[1])), indexOf(RATINGS, Integer.parseInt(v[2])),
-                        Math.max(0, Arrays.asList(GENRES).indexOf(v[3].isEmpty() ? null : v[3])),
-                        Math.max(0, Math.min(STATUSES.length - 1, Integer.parseInt(v[4]))));
-            } catch (NumberFormatException e) {
-                return ANY;
+        /** The genres as Trakt takes them: "comedy,drama,-horror" (the ones left out with a minus). */
+        private String genreList() {
+            StringBuilder g = new StringBuilder();
+            for (int i = 0; i < GENRES.length; i++) {
+                if ((genres & 1L << i) != 0) g.append(g.length() > 0 ? "," : "").append(GENRES[i]);
+                else if ((without & 1L << i) != 0) g.append(g.length() > 0 ? ",-" : "-").append(GENRES[i]);
             }
+            return g.toString();
         }
 
-        private static int indexOf(int[] values, int value) {
-            for (int i = 0; i < values.length; i++) if (values[i] == value) return i;
-            return 0;
+        private static String number(float v) {
+            return v == Math.rint(v) ? String.valueOf((int) v) : String.valueOf(v);
+        }
+
+        private static int bits(int... at) {
+            int b = 0;
+            for (int i : at) b |= 1 << i;
+            return b;
+        }
+
+        /** By value: "v2;type=tv;source=trending;genres=comedy,-horror;all=1;years=2010-2015;…", only what isn't the default. */
+        String saved() {
+            StringBuilder s = new StringBuilder("v2");
+            if (type != 0) s.append(";type=").append(TYPES[type]);
+            if (source != 0) s.append(";source=").append(SOURCES[source]);
+            if (genres != 0 || without != 0) s.append(";genres=").append(genreList());
+            if (allGenres) s.append(";all=1");
+            if (yearFrom > 0) s.append(";years=").append(yearFrom).append('-').append(yearTo);
+            if (statuses != 0) {
+                s.append(";statuses=");
+                for (int i = 0, n = 0; i < STATUSES.length; i++) if ((statuses & 1 << i) != 0) s.append(n++ > 0 ? "," : "").append(STATUSES[i]);
+            }
+            StringBuilder r = new StringBuilder();
+            for (int i = 0; i < RATINGS.length; i++) {
+                if (ratings[i] != 0) r.append(r.length() > 0 ? "," : "").append(RATINGS[i]).append(':').append(number(RATING_MIN[i][ratings[i] - 1]));
+            }
+            if (r.length() > 0) s.append(";ratings=").append(r);
+            StringBuilder p = new StringBuilder();
+            for (int i = 0; i < PARENTAL.length; i++) {
+                if (parental[i] != 0) p.append(p.length() > 0 ? "," : "").append(PARENTAL[i]).append(':').append(3 - parental[i]);
+            }
+            if (p.length() > 0) s.append(";parental=").append(p);
+            if (unrated) s.append(";unrated=1");
+            return s.toString();
+        }
+
+        /** A saved filter; one saved before (type|decade|rating|genre|status) becomes the same filter. Unknown values go. */
+        static Filter parse(String saved) {
+            Filter f = new Filter();
+            if (saved == null) return f;
+            try {
+                if (saved.startsWith("v2")) {
+                    for (String part : saved.split(";")) {
+                        int eq = part.indexOf('=');
+                        if (eq < 0) continue;
+                        String key = part.substring(0, eq), value = part.substring(eq + 1);
+                        switch (key) {
+                            case "type": f.type = Math.max(0, Arrays.asList(TYPES).indexOf(value)); break;
+                            case "source": f.source = Math.max(0, Arrays.asList(SOURCES).indexOf(value)); break;
+                            case "genres":
+                                for (String g : value.split(",")) {
+                                    int i = Arrays.asList(GENRES).indexOf(g.startsWith("-") ? g.substring(1) : g);
+                                    if (i < 0) continue;
+                                    if (g.startsWith("-")) f.without |= 1L << i; else f.genres |= 1L << i;
+                                }
+                                break;
+                            case "all": f.allGenres = value.equals("1"); break;
+                            case "years":
+                                String[] y = value.split("-");
+                                f.yearFrom = Integer.parseInt(y[0]);
+                                f.yearTo = Integer.parseInt(y[y.length - 1]);
+                                break;
+                            case "statuses":
+                                for (String st : value.split(",")) {
+                                    int i = Arrays.asList(STATUSES).indexOf(st);
+                                    if (i >= 0) f.statuses |= 1 << i;
+                                }
+                                break;
+                            case "ratings":
+                                for (String rv : value.split(",")) {
+                                    String[] kv = rv.split(":");
+                                    int i = Arrays.asList(RATINGS).indexOf(kv[0]);
+                                    if (i >= 0 && kv.length == 2) f.ratings[i] = minIndex(i, Float.parseFloat(kv[1]));
+                                }
+                                break;
+                            case "parental":
+                                for (String pv : value.split(",")) {
+                                    String[] kv = pv.split(":");
+                                    int i = Arrays.asList(PARENTAL).indexOf(kv[0]);
+                                    if (i >= 0 && kv.length == 2) f.parental[i] = Math.max(0, Math.min(3, 3 - Integer.parseInt(kv[1])));
+                                }
+                                break;
+                            case "unrated": f.unrated = value.equals("1"); break;
+                            default: break;
+                        }
+                    }
+                } else {
+                    String[] v = saved.split("\\|", -1);
+                    if (v.length != 5) return f;
+                    f.type = Math.max(0, Arrays.asList(TYPES).indexOf(v[0].isEmpty() ? null : v[0]));
+                    int decade = Integer.parseInt(v[1]);
+                    if (decade == 1900) {
+                        f.yearFrom = 1900;
+                        f.yearTo = 1989;
+                    } else if (decade > 0) {
+                        f.yearFrom = decade;
+                        f.yearTo = decade + 9;
+                    }
+                    int rating = Integer.parseInt(v[2]);
+                    if (rating > 0) f.ratings[0] = minIndex(0, rating * 10);
+                    int g = Arrays.asList(GENRES).indexOf(v[3]);
+                    if (g >= 0) f.genres = 1L << g;
+                    switch (Integer.parseInt(v[4])) {
+                        case 1: f.statuses = bits(1, 2); break;
+                        case 2: f.statuses = bits(3, 5, 6, 7); break;
+                        case 3: f.statuses = bits(10); break;
+                        case 4: f.statuses = bits(9); break;
+                        default: break;
+                    }
+                    if (f.type != SHOWS) f.statuses = 0;
+                }
+            } catch (RuntimeException e) {
+                return new Filter();
+            }
+            if (f.yearFrom <= 0 || f.yearTo < f.yearFrom) f.yearFrom = f.yearTo = 0;
+            if ((f.statuses & ONGOING) != 0) f.statuses |= ONGOING;
+            f.statuses &= statusesOf(TYPES[f.type]);
+            return f;
+        }
+
+        /** 1 + the index of `value` among the source's minimums (the nearest one at or below it), 0 below them all. */
+        private static int minIndex(int source, float value) {
+            int at = 0;
+            for (int i = 0; i < RATING_MIN[source].length; i++) if (RATING_MIN[source][i] <= value + 0.001f) at = i + 1;
+            return at;
         }
 
         @Override public boolean equals(Object o) {
@@ -185,6 +357,8 @@ final class Recs {
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Titles a new list takes at most (movies and shows together): all of Trakt's recommendations, or of a list. */
     private static final int LIST_MAX = 400;
+    /** Titles of each type a filter asks Trakt for (its most at once). */
+    private static final int DISCOVER_MAX = 250;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
     private static final int CACHE_VERSION = 16;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
@@ -283,7 +457,7 @@ final class Recs {
     private final Set<String> hidden = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final SharedPreferences hiddenPrefs;
     /** Each row's filter (only Explore has one), kept apart from the cache like `hidden`. */
-    private final Filter[] filters = {Filter.ANY, Filter.ANY, Filter.ANY, Filter.ANY};
+    private final Filter[] filters = {new Filter(), new Filter(), new Filter(), new Filter()};
     private final SharedPreferences filterPrefs;
     /**
      * A row's own titles by key, in their order: filtered Explore's (under EXPLORE: Trakt's order for the filter, or
@@ -611,15 +785,15 @@ final class Recs {
     }
 
     /**
-     * Main thread: Explore's new filter (kind null; the other rows have none). Its titles come again: Trakt's
-     * recommendations filtered there (it reaches past the unfiltered list's end), a tab's own list filtered here;
-     * meanwhile the row is empty, its cards pulsing. `failed` runs if Trakt can't be asked: the row goes back to what it
-     * showed.
+     * Main thread: Explore's new filter (kind null; the other rows have none; a copy is kept). Its titles come again,
+     * from Trakt with the filter applied there (it reaches past the unfiltered list's end); meanwhile the row is empty,
+     * its cards pulsing. `failed` runs if Trakt can't be asked: the row goes back to what it showed.
      */
     void setFilter(String kind, Filter f, Runnable failed) {
         int r = row(kind);
         Filter before = filters[r];
         if (kind != null || f.equals(before)) return;
+        f = f.copy();
         List<String> keysBefore = rowTitles.get(EXPLORE);
         filters[r] = f;
         filterPrefs.edit().putString(EXPLORE, f.saved()).apply();
@@ -684,22 +858,16 @@ final class Recs {
     }
 
     /**
-     * io thread: filtered Explore's titles by key, movies and shows taking turns (or the one type the filter takes): from
-     * each tab's own list, filtered here, else from Trakt's recommendations, filtered there. The ones not known yet go
-     * to the queue (or, while the list is being made, into `candidates`), to be looked up when the row gets to them.
+     * io thread: filtered Explore's titles by key, movies and shows taking turns (or the one type the filter takes),
+     * from the filter's source on Trakt (the person's recommendations, or Trakt's trending, popular or anticipated
+     * titles), filtered there; the ones they've watched left out. The ones not known yet go to the queue (or, while the
+     * list is being made, into `candidates`), to be looked up when the row gets to them.
      */
     private List<String> filteredKeys(Filter f, List<Pick> candidates) throws IOException {
         List<Pick> movies = new ArrayList<>(), shows = new ArrayList<>();
         for (String kind : new String[] {"movie", "tv"}) {
             if (!f.takes(kind)) continue;
-            List<Trakt.Item> items = ownList(kind);
-            if (items.isEmpty()) {
-                items = Trakt.recommendations(kind.equals("movie") ? "movies" : "shows", f.query(kind), 100);
-            } else {
-                List<Trakt.Item> passed = new ArrayList<>();
-                for (Trakt.Item item : items) if (f.matches(item)) passed.add(item);
-                items = passed;
-            }
+            List<Trakt.Item> items = Trakt.discover(f.source(), kind.equals("movie") ? "movies" : "shows", f.query(kind), DISCOVER_MAX);
             for (Trakt.Item item : items) (kind.equals("movie") ? movies : shows).add(pickFromTrakt(item, kind));
         }
         List<Pick> found = new ArrayList<>();

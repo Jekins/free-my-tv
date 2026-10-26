@@ -41,6 +41,11 @@ final class Ui {
     /** Android 8 to 11: older TVs and boxes, whose GPUs need the cheaper drawing paths (Shadows, rounded images). */
     static final boolean LEGACY = Build.VERSION.SDK_INT < 31;
     /**
+     * The accent: a warm yellow (what's picked, a filtered tab's dot, the search's caret); ACCENT_DEEP is the same hue
+     * darker, for text and marks on white or light glass, where the yellow itself would wash out.
+     */
+    static final int ACCENT = 0xFFFFC233, ACCENT_DEEP = 0xFFB27A00;
+    /**
      * The language in use: "en" or one with a catalogue in assets/i18n (pt, es, de, fr, zh-CN…), picked in the settings
      * or, with "auto", the TV's own (English when there is no catalogue for it).
      */
