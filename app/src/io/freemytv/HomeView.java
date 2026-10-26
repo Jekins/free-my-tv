@@ -537,6 +537,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     void resume() {
         if (running) return;
         running = true;
+        traktIn = Recs.canFilter();
         checkNight(false);
         boolean h24 = Prefs.clock24();
         if (h24 != clock24) {   // 12/24 hours changed in the TV's settings: the clock and the drawer's times again
@@ -664,6 +665,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     @Override public void onData() {
         wake();
+        traktIn = Recs.canFilter();
         updatePalette();
         checkNight(true);
         layoutStatus();
@@ -780,6 +782,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         Symbols.warm(getContext(), "search", SEARCH_ICON * k);   // the magnifier, at rest and focused
         Symbols.warm(getContext(), "search", SEARCH_ICON * k * 1.1f);
+        Symbols.warm(getContext(), "chevron_down", 40 * k);   // over Explore's tab, upside down: ↑ opens its filters
         Symbols.warm(getContext(), "mic", 26 * k);   // the field's microphone, at rest and focused
         Symbols.warm(getContext(), "mic", 26 * k * 1.08f);
         layoutShelf();
@@ -2816,7 +2819,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // on a pick, its menu opens; on the Explore tab, its filters
 
     private void hold() {
-        if (sheetOpen) toggleShelf(); else if (canPickMenu()) openPickMenu(); else if (canFilter()) openFilters(); else startReorder();
+        if (sheetOpen) toggleShelf(); else if (canPickMenu()) openPickMenu(); else if (canFilter()) openFilters(true); else startReorder();
     }
 
     /** TalkBack's long click on an app in All Apps (once per press, if the remote's hold also arrives). */
@@ -2899,6 +2902,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean menuFilters;
     private FilterPanel filterPanel;
     private boolean menuOpen, menuDirty, menuBackDirty, menuRight, menuCovers, menuSignedIn;   // signed in to Trakt: read once as it opens (a file)
+    /** Signed in to Trakt (a file): read as the screen comes back and as data comes in, never while drawing. */
+    private boolean traktIn;
     private Recs.Pick menuPick;
     private int menuCard, menuIndex, starIndex, menuShotId, menuWarm;
     private Bitmap menuShot;    // the screen behind the menu: a small copy, blurred and dimmed
@@ -2981,12 +2986,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         return !sheetOpen && zone == Z_TOP && topIndex < TABS && TAB_KIND[topIndex] == null && picksOn();
     }
 
-    /** Explore's filters, over the screen blurred as behind a pick's menu. */
-    private void openFilters() {
+    /** Explore's filters, over the screen blurred as behind a pick's menu: ↑ on its tab, or OK `held` there. */
+    private void openFilters(boolean held) {
         handler.removeCallbacks(holdStart);
         holdArmed = false;
         if (menuOpen || !canFilter()) return;
-        okHeld = true;
+        if (held) okHeld = true;   // the release of this press opens nothing
         if (!Recs.canFilter()) {
             showToast(Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."));
             return;
@@ -4256,6 +4261,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             float tw = p.measureText(tabs()[i]);
             c.drawText(tabs()[i], r.centerX() - tw / 2, r.centerY() + Ui.halfCap(p), p);
             p.setColor(ink);
+            if (i == tab && focus > 0.01f && TAB_KIND[i] == null && traktIn && !searchOpen) {
+                // Focused, Explore says ↑ opens its filters: a small chevron over the pill (the tab keeps its height).
+                float cx = r.centerX(), cy = cell.top - 20 * k;
+                c.save();
+                c.rotate(180, cx, cy);
+                Symbols.draw(getContext(), c, "chevron_down", cx, cy, 40 * k, Ui.alpha(tone(L_INK, WHITE), 0.85f * focus * shown));
+                c.restore();
+            }
             if (TAB_KIND[i] == null && !recs.filter(null).none()) {
                 // Filtered: a dot at the name's top right, in the accent.
                 fill.setShader(null);
@@ -4269,7 +4282,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         String empty = searchOpen ? searchEmpty : slots > 0 || recs.loading(kind) ? null
                 : Recs.WATCHLIST.equals(kind) ? (Recs.canFilter() ? Ui.tr("Your Trakt watchlist is empty. Hold OK on a card to add it.")
                         : Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."))
-                : !recs.filter(kind).none() ? Ui.tr("Nothing here with these filters. Hold OK on the tab to change them.") : null;
+                : !recs.filter(kind).none() ? Ui.tr("Nothing here with these filters. Press ↑ on the tab to change them.") : null;
         if (empty != null) c.drawText(empty, w / 2f, (L_CARDS_TOP + L_CARD_H / 2) * k + Ui.halfCap(lEmpty), lEmpty);
         // The row, from each card's width this frame (never under the tall one); x0 is each card's place without the
         // stretch. The card the focus goes to pushes the next one only by what would bring their edges (as drawn, the
@@ -4604,6 +4617,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     if (topIndex < TABS) selectTab(topIndex);   // like Apple TV tabs: focusing a tab selects it
                 } else if (dy > 0) {
                     zone = slots == 0 ? Z_SHELF : Z_CARDS;   // the row's own card, as from the shelf
+                } else if (canFilter() && Recs.canFilter()) {
+                    openFilters(false);   // up from Explore: its filters (a chevron above the tab says so)
+                    return true;
                 } else if (topIndex < TABS && !lightButtons.isEmpty()) {
                     topIndex = TABS;   // up from the tabs reaches the corner buttons without walking the row
                 } else {

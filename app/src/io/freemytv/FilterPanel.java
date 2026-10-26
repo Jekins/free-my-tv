@@ -14,17 +14,18 @@ import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
-import java.util.Comparator;
+import java.util.Collections;
 import java.util.List;
 
 /**
- * Explore's filters (OK held on its tab): a panel of Liquid Glass in the middle of the screen, drawn on the home
- * screen's menu layers (HomeView keeps the glass, the blurred copy of the screen behind it and the fade). On the left
- * its sections, each saying what it's set to; on the right every option of the focused one at once, as capsules in
- * lines (the years by decade, one rating source or kind of content a line), so the whole list is in sight and a few
- * presses away. The focus is a white capsule that glides and stretches from one option to the next. OK picks (genres:
- * wanted, then left out, then neither; years: one, then the span to a second); Back goes from the options to the
- * sections, and from there closes the panel, which applies the filters, as Show does.
+ * Explore's filters (↑ on its tab, or OK held there): a panel of Liquid Glass in the middle of the screen, drawn on
+ * the home screen's menu layers (HomeView keeps the glass, the blurred copy of the screen behind it and the fade), laid
+ * out as tvOS would: on the left its sections, each saying what it's set to, then Reset and Show as buttons; on the
+ * right every option of the focused section at once, as capsules in even columns (the decades in a list, the years of
+ * the focused one beside it), so the whole list is in sight and a few presses away. The focus is a white capsule that
+ * glides and stretches from one option to the next. OK picks (genres: wanted, then left out, then neither; years: they
+ * add up into a span, as a slider's two ends would); Back goes from the options to the sections, and from there
+ * closes the panel, which applies the filters, as Show does.
  */
 final class FilterPanel {
     interface Host {
@@ -42,14 +43,24 @@ final class FilterPanel {
             K_DECADE = 6, K_YEAR = 7, K_STATUS_ANY = 8, K_STATUS = 9, K_RATING = 10, K_PARENTAL = 11, K_UNRATED = 12;
     // A capsule's look: off, picked, left out (a genre), between two years picked.
     private static final int OFF = 0, ON = 1, OUT = 2, WITHIN = 3;
-    /** The statuses in the order they're offered: out, on the air, over, then still to come. */
-    private static final int[] STATUS_ORDER = {0, 1, 2, 10, 9, 3, 4, 5, 6, 7, 8};
+    /** The statuses in a title's order of life: rumored, planned, made, out, on the air, over. */
+    private static final int[] STATUS_ORDER = {8, 5, 3, 4, 7, 6, 0, 1, 2, 10, 9};
+    /** The genres most films have (the rest, TV's and niche ones, come after them, apart). */
+    private static final List<String> MAIN_GENRES = Arrays.asList("action", "adventure", "animation", "anime",
+            "biography", "comedy", "crime", "documentary", "drama", "family", "fantasy", "history", "horror", "music",
+            "musical", "mystery", "romance", "science-fiction", "superhero", "thriller", "war", "western");
+    private static final long ANIMATION = 1L << Arrays.asList(Recs.Filter.GENRES).indexOf("animation"),
+            ANIME = 1L << Arrays.asList(Recs.Filter.GENRES).indexOf("anime");
+    /** The types offered: all, movies, shows, then cartoons, animated shows and anime (a type and a genre picked). */
+    private static final int TYPE_PRESETS = 6;
+    /** A move that leaves the options for the sections. */
+    private static final int LEAVE = -1;
     private static final int RED = 0xFFFF453A, INK = 0xFF1D1D1F, WHITE = 0xFFF5F5F7;
     private static final int FIRST_YEAR = 1930;   // as far back as Trakt's own slider goes
     // Sizes at 1920 wide (× k).
     private static final float PANEL_W = 1560, PANEL_H = 880, PAD = 36, HEAD = 84, SIDE_W = 470, SIDE_H = 70,
             SIDE_GAP = 4, SIDE_SPACE = 24, PANE_GAP = 44, LABEL_H = 48, CHIP_H = 58, CHIP_GAP = 12, LINE_GAP = 12,
-            GROUP_GAP = 26, CHIP_PAD = 26, GLYPH = 30;
+            GROUP_GAP = 26, CHIP_PAD = 26, GLYPH = 30, DECADE_GAP = 8, YEARS_GAP = 36;
     /** The panel's corners: the sections' capsules' plus the margin around them (the curves share a center). */
     static final float RADIUS = SIDE_H / 2 + PAD;
 
@@ -59,6 +70,7 @@ final class FilterPanel {
         final float textW;
         final boolean multi;      // a check (or a minus) shows before the text when picked
         float x, y, w;
+        float size = 1;           // the text's scale: a long name in a narrow cell is drawn smaller
         int line;
 
         Chip(int kind, int group, int value, String text, float textW, boolean multi) {
@@ -73,10 +85,11 @@ final class FilterPanel {
 
     private static final class Label {
         final String text;
-        final float y;
+        final float x, y;
 
-        Label(String text, float y) {
+        Label(String text, float x, float y) {
             this.text = text;
+            this.x = x;
             this.y = y;
         }
     }
@@ -86,11 +99,12 @@ final class FilterPanel {
     private final Shadows shadows;
     private float k = 1;
     private TextPaint title, item, summaryPaint, chipText, labelPaint, hint;
+    private float chipSize;
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), stroke = new Paint(Paint.ANTI_ALIAS_FLAG),
             shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private Recs.Filter draft = new Recs.Filter();
-    private String[] typeNames = {"", "", ""};
+    private final String[] typeNames = new String[TYPE_PRESETS];
     private String heading = "";
     private final String[] summary = new String[SECTIONS];
     private final RectF panel = new RectF(), pane = new RectF(), tmp = new RectF();
@@ -102,6 +116,9 @@ final class FilterPanel {
     private float contentH;
     private int shown = -1;                   // the section in the pane
     private int yearsOf;                      // the decade whose years the Years section shows
+    private int decades;                      // in the Years section: "any year" and the decades come first
+    private float yearsX, pickedY;            // where the years start, and the line saying which are picked
+    private String yearsText = "";            // the years picked, in full
     private int side, focus;                  // the focused section (or Reset, Show); the focused capsule
     private boolean inPane, okDown, backDown;
     private float wantX;                      // ↑ ↓ keep to this x (the capsule's center the focus came from)
@@ -123,7 +140,8 @@ final class FilterPanel {
         title = paint(Ui.semibold, 34 * k);
         item = paint(Ui.medium, 30 * k);
         summaryPaint = paint(Ui.medium, 25 * k);
-        chipText = paint(Ui.medium, 27 * k);
+        chipSize = 27 * k;
+        chipText = paint(Ui.medium, chipSize);
         labelPaint = paint(Ui.semibold, 23 * k);
         hint = paint(Ui.medium, 23 * k);
         shadow.setMaskFilter(new BlurMaskFilter(14 * k, BlurMaskFilter.Blur.NORMAL));
@@ -143,7 +161,10 @@ final class FilterPanel {
     void open(Recs.Filter current, String[] types, String tab) {
         draft = current.copy();
         yearsOf = draft.yearFrom > 0 ? draft.yearFrom / 10 * 10 : thisDecade();
-        typeNames = types;
+        System.arraycopy(types, 0, typeNames, 0, 3);
+        typeNames[3] = Ui.tr("filter|Cartoons");
+        typeNames[4] = Ui.tr("filter|Animated shows");
+        typeNames[5] = Ui.tr("genre|Anime");
         heading = Ui.trf("Filters: {tab}", "tab", tab);
         side = 0;
         inPane = okDown = backDown = false;
@@ -236,33 +257,10 @@ final class FilterPanel {
             return;
         }
         if (chips.isEmpty()) return;
-        Chip c = chips.get(focus);
-        int next = focus;
-        if (dx != 0) {
-            int first = lineFirst[c.line], last = lastOf(c.line);
-            if (dx < 0 && focus == first) {
-                leavePane();
-                return;
-            }
-            next = Math.max(first, Math.min(last, focus + dx));
-            if (next != focus) wantX = chips.get(next).x + chips.get(next).w / 2;
-        } else {
-            int line = c.line + dy;
-            if (line < 0 || line >= lineFirst.length) return;
-            float best = Float.MAX_VALUE;
-            for (int i = lineFirst[line]; i <= lastOf(line); i++) {
-                Chip o = chips.get(i);
-                float d = Math.abs(o.x + o.w / 2 - wantX);
-                if (d < best) {
-                    best = d;
-                    next = i;
-                }
-            }
-            if (dy < 0 && c.kind == K_YEAR && chips.get(next).kind != K_YEAR) {
-                for (int i = 0; i < chips.size(); i++) {   // up from the years: to their decade
-                    if (chips.get(i).kind == K_DECADE && chips.get(i).value == yearsOf) next = i;
-                }
-            }
+        int next = shown == S_YEARS ? nextYear(dx, dy) : nextChip(dx, dy);
+        if (next == LEAVE) {
+            leavePane();
+            return;
         }
         if (next == focus) return;
         focus = next;
@@ -275,6 +273,52 @@ final class FilterPanel {
         host.moved();
         host.announce(chipLabel(chips.get(focus)));
         host.dirty();
+    }
+
+    /** Among options in lines: along the line (← past its start: LEAVE), or to the nearest one above or below. */
+    private int nextChip(int dx, int dy) {
+        Chip c = chips.get(focus);
+        int next = focus;
+        if (dx != 0) {
+            int first = lineFirst[c.line], last = lastOf(c.line);
+            if (dx < 0 && focus == first) return LEAVE;
+            next = Math.max(first, Math.min(last, focus + dx));
+            if (next != focus) wantX = chips.get(next).x + chips.get(next).w / 2;
+            return next;
+        }
+        int line = c.line + dy;
+        if (line < 0 || line >= lineFirst.length) return focus;
+        float best = Float.MAX_VALUE;
+        for (int i = lineFirst[line]; i <= lastOf(line); i++) {
+            Chip o = chips.get(i);
+            float d = Math.abs(o.x + o.w / 2 - wantX);
+            if (d < best) {
+                best = d;
+                next = i;
+            }
+        }
+        return next;
+    }
+
+    /**
+     * The Years section: ↑ ↓ along the decades (each shows its years beside it), → into its years (to the one picked,
+     * else the first), ← from them back to their decade; the years are two lines of five.
+     */
+    private int nextYear(int dx, int dy) {
+        if (focus < decades) {
+            if (dy != 0) return Math.max(0, Math.min(decades - 1, focus + dy));
+            if (dx < 0) return LEAVE;
+            for (int i = decades; i < chips.size(); i++) if (state(chips.get(i)) == ON) return i;
+            return decades;
+        }
+        int at = focus - decades, row = at / 5, col = at % 5;
+        if (dx < 0 && col == 0) {
+            for (int i = 0; i < decades; i++) if (chips.get(i).kind == K_DECADE && chips.get(i).value == yearsOf) return i;
+            return 0;
+        }
+        if (dx != 0) return decades + row * 5 + Math.max(0, Math.min(4, col + dx));
+        int to = row + dy;
+        return to < 0 || to > 1 ? focus : decades + to * 5 + col;
     }
 
     private int lastOf(int line) {
@@ -378,9 +422,9 @@ final class FilterPanel {
     private int state(Chip c) {
         Recs.Filter d = draft;
         switch (c.kind) {
-            case K_TYPE: return d.type == c.value ? ON : OFF;
+            case K_TYPE: return preset(d) == c.value ? ON : OFF;
             case K_SORT: return d.source == c.value ? ON : OFF;
-            case K_MATCH: return (d.allGenres ? 1 : 0) == c.value ? ON : OFF;
+            case K_MATCH: return d.genres != 0 && (d.allGenres ? 1 : 0) == c.value ? ON : OFF;   // with genres wanted
             case K_GENRE_ANY: return d.genres == 0 && d.without == 0 ? ON : OFF;
             case K_GENRE: return (d.genres & 1L << c.value) != 0 ? ON : (d.without & 1L << c.value) != 0 ? OUT : OFF;
             case K_YEAR_ANY: return d.yearFrom == 0 ? ON : OFF;
@@ -402,7 +446,7 @@ final class FilterPanel {
     private void pick(Chip c) {
         Recs.Filter d = draft;
         switch (c.kind) {
-            case K_TYPE: d.setType(c.value); break;
+            case K_TYPE: setPreset(d, c.value); break;
             case K_SORT: d.source = c.value; break;
             case K_MATCH: d.allGenres = c.value == 1; break;
             case K_GENRE_ANY: d.genres = d.without = 0; break;
@@ -419,22 +463,38 @@ final class FilterPanel {
                 break;
             case K_YEAR_ANY: d.yearFrom = d.yearTo = 0; break;
             case K_DECADE:
-                if (d.yearFrom == c.value && d.yearTo == c.value + 9) {
+                // A decade adds to the span; the very one picked again lets it go; one inside a wider span narrows it.
+                int a = c.value, b = c.value + 9;
+                if (d.yearFrom == a && d.yearTo == b) {
                     d.yearFrom = d.yearTo = 0;
+                } else if (d.yearFrom == 0 || (d.yearFrom <= a && d.yearTo >= b)) {
+                    d.yearFrom = a;
+                    d.yearTo = b;
                 } else {
-                    d.yearFrom = c.value;
-                    d.yearTo = c.value + 9;
+                    d.yearFrom = Math.min(d.yearFrom, a);
+                    d.yearTo = Math.max(d.yearTo, b);
                 }
                 break;
             case K_YEAR:
-                // One year; a second one makes the span between them; OK on a lone year again lets it go.
-                if (d.yearFrom == 0 || d.yearFrom != d.yearTo) {
-                    d.yearFrom = d.yearTo = c.value;
-                } else if (d.yearFrom == c.value) {
+                // As a slider's two ends: years picked one after another add up into a span (1960, 1961, 1962 make
+                // 1960–1962); an end picked again comes off; one inside the span moves the nearer end there.
+                int y = c.value;
+                if (d.yearFrom == 0) {
+                    d.yearFrom = d.yearTo = y;
+                } else if (y == d.yearFrom && y == d.yearTo) {
                     d.yearFrom = d.yearTo = 0;
+                } else if (y == d.yearFrom) {
+                    d.yearFrom++;
+                } else if (y == d.yearTo) {
+                    d.yearTo--;
+                } else if (y < d.yearFrom) {
+                    d.yearFrom = y;
+                } else if (y > d.yearTo) {
+                    d.yearTo = y;
+                } else if (y - d.yearFrom <= d.yearTo - y) {
+                    d.yearFrom = y;
                 } else {
-                    d.yearFrom = Math.min(d.yearFrom, c.value);
-                    d.yearTo = Math.max(d.yearTo, c.value);
+                    d.yearTo = y;
                 }
                 break;
             case K_STATUS_ANY: d.statuses = 0; break;
@@ -442,6 +502,27 @@ final class FilterPanel {
             case K_RATING: d.ratings[c.group] = c.value; break;
             case K_PARENTAL: d.parental[c.group] = c.value; break;
             default: d.unrated = c.value == 1; break;
+        }
+    }
+
+    /** The type offered that the filter is: its type, and with movies or shows the animation genre, with both anime. */
+    private static int preset(Recs.Filter d) {
+        boolean animated = (d.genres & ANIMATION) != 0;
+        if (d.type == Recs.Filter.MOVIES) return animated ? 3 : 1;
+        if (d.type == Recs.Filter.SHOWS) return animated ? 4 : 2;
+        return (d.genres & ANIME) != 0 ? 5 : 0;
+    }
+
+    /** Picks a type offered: the type, and the genre that makes it (only on the screen: Trakt sees a type and genres). */
+    private static void setPreset(Recs.Filter d, int preset) {
+        d.setType(preset == 1 || preset == 3 ? Recs.Filter.MOVIES : preset == 2 || preset == 4 ? Recs.Filter.SHOWS : 0);
+        d.genres &= ~(ANIMATION | ANIME);
+        if (preset == 3 || preset == 4) {
+            d.genres |= ANIMATION;
+            d.without &= ~ANIMATION;
+        } else if (preset == 5) {
+            d.genres |= ANIME;
+            d.without &= ~ANIME;
         }
     }
 
@@ -457,7 +538,9 @@ final class FilterPanel {
 
     private float sideTop(int i) {
         float top = panel.top + PAD * k + HEAD * k + i * (SIDE_H + SIDE_GAP) * k;
-        return i >= RESET ? top + SIDE_SPACE * k : top;
+        if (i >= RESET) top += SIDE_SPACE * k;   // the buttons, apart from the sections
+        if (i >= SHOW) top += 8 * k;
+        return top;
     }
 
     private static String sideName(int i) {
@@ -499,43 +582,49 @@ final class FilterPanel {
         cx = cy = 0;
         lines = 0;
         switch (section) {
-            case S_TYPE:
+            case S_TYPE: {
                 group(null);
-                for (int i = 0; i < 3; i++) chip(K_TYPE, 0, i, typeNames[i], false);
+                List<Chip> types = new ArrayList<>();
+                for (int i = 0; i < TYPE_PRESETS; i++) types.add(make(K_TYPE, 0, i, typeNames[i], false));
+                grid(types, 3);   // all, movies, shows; under them their animated kinds
                 break;
+            }
             case S_SORT:
                 group(null);
                 for (int i = 0; i < Recs.Filter.SOURCES.length; i++) chip(K_SORT, 0, i, sortName(i), false);
                 break;
-            case S_GENRES:
-                group(Ui.tr("filter|Genre match"));
+            case S_GENRES: {
+                // Any genre, or the ones picked: any of them or all at once; then the genres in even columns, in
+                // alphabetical order, the ones most films have first and TV's and the niche ones apart.
+                group(null);
+                chip(K_GENRE_ANY, 0, 0, Ui.tr("filter|Any genre"), false);
                 chip(K_MATCH, 0, 0, Ui.tr("filter|Any of the genres"), false);
                 chip(K_MATCH, 0, 1, Ui.tr("filter|All of the genres"), false);
-                group(Ui.tr("filter|Genres"));
-                chip(K_GENRE_ANY, 0, 0, Ui.tr("filter|Any genre"), false);
-                Integer[] order = new Integer[Recs.Filter.GENRES.length];
-                for (int i = 0; i < order.length; i++) order[i] = i;
                 Collator collator = Collator.getInstance(Ui.locale());
-                Arrays.sort(order, Comparator.comparing(i -> genreName(Recs.Filter.GENRES[i]), collator));
-                for (int i : order) chip(K_GENRE, 0, i, genreName(Recs.Filter.GENRES[i]), true);
-                break;
-            case S_YEARS:
-                // The decades, then the years of one of them (the one the focus is on, or was last), as tvOS would
-                // have it: a few roomy capsules at a time rather than a century of narrow ones.
-                group(null);
-                chip(K_YEAR_ANY, 0, 0, Ui.tr("filter|Any year"), false);
-                for (int decade = thisDecade(); decade >= FIRST_YEAR; decade -= 10) {
-                    chip(K_DECADE, 0, decade, Ui.trf("filter|{year}s", "year", String.valueOf(decade)), false);
+                for (int part = 0; part < 2; part++) {
+                    List<Chip> list = new ArrayList<>();
+                    for (int i = 0; i < Recs.Filter.GENRES.length; i++) {
+                        String g = Recs.Filter.GENRES[i];
+                        if (MAIN_GENRES.contains(g) == (part == 0)) list.add(make(K_GENRE, 0, i, genreName(g), true));
+                    }
+                    Collections.sort(list, (a, b) -> collator.compare(a.text, b.text));
+                    group(part == 0 ? Ui.tr("filter|Main genres") : Ui.tr("filter|More genres"));
+                    grid(list, 3);
                 }
-                group(Ui.trf("filter|{year}s", "year", String.valueOf(yearsOf)));
-                years(yearsOf);
                 break;
-            case S_STATUS:
+            }
+            case S_YEARS:
+                yearsSection();
+                break;
+            case S_STATUS: {
                 group(null);
-                chip(K_STATUS_ANY, 0, 0, Ui.tr("filter|Any status"), false);
+                List<Chip> list = new ArrayList<>();
+                list.add(make(K_STATUS_ANY, 0, 0, Ui.tr("filter|Any status"), false));
                 int have = Recs.Filter.statusesOf(Recs.Filter.TYPES[draft.type]);
-                for (int i : STATUS_ORDER) if ((have & 1 << i) != 0) chip(K_STATUS, 0, i, statusName(i), true);
+                for (int i : STATUS_ORDER) if ((have & 1 << i) != 0) list.add(make(K_STATUS, 0, i, statusName(i), true));
+                grid(list, 3);
                 break;
+            }
             case S_RATINGS:
                 for (int r = 0; r < Recs.Filter.RATINGS.length; r++) {
                     group(ratingSource(r, false));
@@ -578,7 +667,7 @@ final class FilterPanel {
         if (!chips.isEmpty()) cy += CHIP_H * k + GROUP_GAP * k;
         float top = cy;
         if (name != null) {
-            labels.add(new Label(name, cy + LABEL_H * k * 0.62f));
+            labels.add(new Label(name, 4 * k, cy + LABEL_H * k * 0.62f));
             cy += LABEL_H * k;
         }
         cx = 0;
@@ -609,20 +698,74 @@ final class FilterPanel {
         lines = tops.size();
     }
 
-    /** A decade's ten years: two lines of five, in cells that fill them. */
-    private void years(int decade) {
-        float cell = (pane.width() - 4 * CHIP_GAP * k) / 5;
-        for (int i = 0; i < 10; i++) {
-            if (i == 5) newLine();
-            String text = String.valueOf(decade + i);
-            Chip c = new Chip(K_YEAR, 0, decade + i, text, chipText.measureText(text), false);
-            c.x = (i % 5) * (cell + CHIP_GAP * k);
+    private Chip make(int kind, int group, int value, String text, boolean multi) {
+        return new Chip(kind, group, value, text, chipText.measureText(text), multi);
+    }
+
+    /**
+     * Options in `cols` even columns, line after line, so every group of a section lines up; a name too long for its
+     * cell is drawn smaller (down to 70%) rather than costing a column.
+     */
+    private void grid(List<Chip> items, int cols) {
+        if (!groupStart) newLine();
+        float gap = CHIP_GAP * k, cell = (pane.width() - (cols - 1) * gap) / cols;
+        for (int i = 0; i < items.size(); i++) {
+            if (i > 0 && i % cols == 0) newLine();
+            Chip c = items.get(i);
+            c.x = (i % cols) * (cell + gap);
             c.y = cy;
             c.w = cell;
             c.line = lines - 1;
+            float room = cell - 2 * 16 * k - (c.multi ? GLYPH * k : 0);
+            if (c.textW > room) c.size = Math.max(0.7f, room / c.textW);
             chips.add(c);
         }
         groupStart = false;
+    }
+
+    /**
+     * Any year and the decades in a list on the left, each a line of its own; beside them the years of one decade (the
+     * one the focus is on, or was last), two lines of five, and under them which years are picked. A few roomy
+     * capsules at a time, as tvOS would have it, rather than a century of narrow ones; ↑ ↓ never leave the list.
+     */
+    private void yearsSection() {
+        List<Chip> list = new ArrayList<>();
+        list.add(make(K_YEAR_ANY, 0, 0, Ui.tr("filter|Any year"), false));
+        for (int decade = thisDecade(); decade >= FIRST_YEAR; decade -= 10) {
+            list.add(make(K_DECADE, 0, decade, Ui.trf("filter|{year}s", "year", String.valueOf(decade)), false));
+        }
+        float listW = 0;
+        for (Chip c : list) listW = Math.max(listW, c.textW + 2 * CHIP_PAD * k);
+        for (int i = 0; i < list.size(); i++) {
+            Chip c = list.get(i);
+            c.x = 0;
+            c.y = i * (CHIP_H + DECADE_GAP) * k;
+            c.w = listW;
+            c.line = i;
+            tops.add(c.y);
+            firsts.add(chips.size());
+            chips.add(c);
+        }
+        decades = list.size();
+        yearsX = listW + YEARS_GAP * k;
+        float cell = (pane.width() - yearsX - 4 * CHIP_GAP * k) / 5;
+        labels.add(new Label(Ui.trf("filter|{year}s", "year", String.valueOf(yearsOf)), yearsX + 4 * k, LABEL_H * k * 0.62f));
+        for (int i = 0; i < 10; i++) {
+            float y = LABEL_H * k + (i / 5) * (CHIP_H + LINE_GAP) * k;
+            if (i % 5 == 0) {
+                tops.add(i == 0 ? 0 : y);   // the first line with the decade's name over it
+                firsts.add(chips.size());
+            }
+            Chip c = make(K_YEAR, 0, yearsOf + i, String.valueOf(yearsOf + i), false);
+            c.x = yearsX + (i % 5) * (cell + CHIP_GAP * k);
+            c.y = y;
+            c.w = cell;
+            c.line = tops.size() - 1;
+            chips.add(c);
+        }
+        pickedY = LABEL_H * k + 2 * CHIP_H * k + LINE_GAP * k + 60 * k;
+        cy = (decades - 1) * (CHIP_H + DECADE_GAP) * k;   // the list is the tallest: its last line ends the content
+        lines = tops.size();
     }
 
     // MARK: - Words
@@ -740,7 +883,7 @@ final class FilterPanel {
     private void summarize() {
         Recs.Filter d = draft;
         String[] full = new String[SECTIONS];
-        full[S_TYPE] = typeNames[d.type];
+        full[S_TYPE] = typeNames[preset(d)];
         full[S_SORT] = sortName(d.source);
         StringBuilder g = new StringBuilder();
         String join = d.allGenres && Long.bitCount(d.genres) > 1 ? " + " : ", ";
@@ -754,6 +897,7 @@ final class FilterPanel {
         full[S_YEARS] = d.yearFrom == 0 ? Ui.tr("filter|Any year") : d.yearFrom == d.yearTo ? String.valueOf(d.yearFrom)
                 : d.yearFrom % 10 == 0 && d.yearTo == d.yearFrom + 9 ? Ui.trf("filter|{year}s", "year", String.valueOf(d.yearFrom))
                 : Ui.trf("filter|{from}–{to}", "from", String.valueOf(d.yearFrom), "to", String.valueOf(d.yearTo));
+        yearsText = d.yearFrom == 0 ? "" : Ui.trf("filter|Picked: {years}", "years", full[S_YEARS]);
         StringBuilder s = new StringBuilder();
         for (int i : STATUS_ORDER) if ((d.statuses & 1 << i) != 0) s.append(s.length() > 0 ? ", " : "").append(statusName(i));
         full[S_STATUS] = s.length() > 0 ? s.toString() : Ui.tr("filter|Any status");
@@ -804,7 +948,8 @@ final class FilterPanel {
     private String paneHint() {
         switch (shown) {
             case S_GENRES: return Ui.tr("filter|OK: wanted · again: left out · again: neither");
-            case S_YEARS: return Ui.tr("filter|OK on two years: the years between");
+            case S_YEARS: return Ui.tr("filter|OK adds a year to the span · again on an end takes it off");
+            case S_STATUS: return Ui.tr("filter|OK ticks a status: as many as you like");
             case S_CONTENT: return Ui.tr("filter|IMDb's parental guide: the most each may have");
             default: return Ui.tr("filter|OK: pick · Back: the sections");
         }
@@ -812,6 +957,19 @@ final class FilterPanel {
 
     private void drawSide(Canvas c, float left) {
         float ih = SIDE_H * k, r = ih / 2, p = Ui.clamp(paneness.value);
+        // Reset and Show are buttons: glass with a bright rim, Show filled with the accent.
+        stroke.setStrokeWidth(1.5f * k);
+        for (int i = RESET; i <= SHOW; i++) {
+            float top = sideTop(i);
+            tmp.set(left, top, left + SIDE_W * k, top + ih);
+            fill.setColor(i == SHOW ? Ui.ACCENT : glassChip);
+            c.drawRoundRect(tmp, r, r, fill);
+            if (i == RESET) {
+                stroke.setColor(rim);
+                tmp.inset(0.75f * k, 0.75f * k);
+                c.drawRoundRect(tmp, r, r, stroke);
+            }
+        }
         // The section's highlight: the white focus while the sections have it, glass while its options do.
         tmp.set(left, sideY.value, left + SIDE_W * k, sideY.value + ih);
         if (p < 0.99f) {
@@ -827,11 +985,12 @@ final class FilterPanel {
             float top = sideTop(i), cyy = top + ih / 2;
             float f = 1 - Math.min(1, Math.abs(sideY.value - top) / (ih + SIDE_GAP * k));   // under the focus
             float on = f * (1 - p);
-            int color = blend(ink, INK, on);
-            if (i == SHOW) color = blend(blend(Ui.ACCENT_DEEP, Ui.ACCENT, dark), Ui.ACCENT_DEEP, on);
+            int color = i == SHOW ? INK : blend(ink, INK, on);   // dark on the yellow and on the white focus
             if (i == RESET && draft.none()) color = Ui.alpha(color, 0.45f);
             item.setColor(color);
-            c.drawText(sideName(i), left + 26 * k, cyy + Ui.halfCap(item), item);
+            String name = sideName(i);
+            float x = i >= RESET ? left + (SIDE_W * k - item.measureText(name)) / 2 : left + 26 * k;   // a button's, centered
+            c.drawText(name, x, cyy + Ui.halfCap(item), item);
             if (i < SECTIONS && !summary[i].isEmpty()) {
                 summaryPaint.setColor(Ui.alpha(color, 0.62f));
                 c.drawText(summary[i], left + SIDE_W * k - 26 * k - summaryPaint.measureText(summary[i]), cyy + Ui.halfCap(summaryPaint), summaryPaint);
@@ -848,7 +1007,11 @@ final class FilterPanel {
         labelPaint.setColor(Ui.alpha(ink, 0.6f));
         for (int i = 0; i < labels.size(); i++) {   // no iterator: drawn on every frame the focus moves
             Label l = labels.get(i);
-            if (l.y > viewTop && l.y < viewBottom + LABEL_H * k) c.drawText(l.text, 4 * k, l.y, labelPaint);
+            if (l.y > viewTop && l.y < viewBottom + LABEL_H * k) c.drawText(l.text, l.x, l.y, labelPaint);
+        }
+        if (shown == S_YEARS && !yearsText.isEmpty()) {
+            item.setColor(blend(Ui.ACCENT_DEEP, Ui.ACCENT, dark));
+            c.drawText(yearsText, yearsX + 4 * k, pickedY, item);
         }
         // Fills: picked in the accent, left out red, the years between faintly in the accent; the rest glass, with a bright
         // rim.
@@ -899,7 +1062,7 @@ final class FilterPanel {
             int focused = st == ON ? Ui.ACCENT_DEEP : st == OUT ? RED : INK;
             int color = blend(rest, focused, f);
             boolean glyph = chip.multi && (st == ON || st == OUT);
-            float gw = glyph ? GLYPH * k : 0, x = chip.x + (chip.w - chip.textW - gw) / 2, mid = chip.y + ch / 2;
+            float gw = glyph ? GLYPH * k : 0, x = chip.x + (chip.w - chip.textW * chip.size - gw) / 2, mid = chip.y + ch / 2;
             if (glyph) {
                 if (st == ON) {
                     Symbols.draw(context, c, "check", x + 11 * k, mid, 24 * k, color);
@@ -913,7 +1076,9 @@ final class FilterPanel {
             }
             chipText.setColor(color);
             chipText.setStrikeThruText(st == OUT);
+            if (chip.size != 1) chipText.setTextSize(chipSize * chip.size);
             c.drawText(chip.text, x + gw, mid + Ui.halfCap(chipText), chipText);
+            if (chip.size != 1) chipText.setTextSize(chipSize);
             chipText.setStrikeThruText(false);
         }
         c.restore();

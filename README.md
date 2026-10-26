@@ -205,16 +205,19 @@ episodes out since you last watched (the last 20 shows you watched, an episode f
 many you haven't seen. It follows Trakt every half hour. All of it shows, Filmix's or not: a title Filmix hasn't says so
 on its card, as in the search.
 
-Holding OK on the Explore tab opens its filters, as Trakt's smart lists have them: on the left their sections, each
-saying what it's set to; on the right every option of the focused one at once. Type (movies, shows or both); sort (your
-recommendations, or Trakt's trending, popular or anticipated titles); genres (any of them or all at once; OK once wants
-a genre, twice leaves it out, three times neither); years (a year, a decade, or the span between two years picked);
-statuses (Trakt's, a movie's and a show's); the least each rating may give (Trakt, IMDb, TMDB, Rotten Tomatoes' critics
-and audience, Metacritic, Letterboxd); and how much sex and nudity, violence, profanity, alcohol and drugs, and
+↑ on the Explore tab (a chevron over it says so), or OK held there, opens its filters, as Trakt's smart lists have
+them: on the left their sections, each saying what it's set to, then *Reset* and *Show* as buttons; on the right every
+option of the focused one at once, in even columns. Type (all, movies, shows, cartoons, animated shows, anime: the last
+three are a type with the animation or anime genre picked); sort (your recommendations, or Trakt's trending, popular or
+anticipated titles); genres, the main ones and the others, each alphabetical (any of them or all at once; OK once wants a
+genre, twice leaves it out, three times neither); years (the decades in a list, the focused one's years beside it:
+years picked one after another add up into a span, as a slider's two ends would, and an end picked again comes off);
+statuses (Trakt's, in a title's order of life); the least each rating may give (Trakt, IMDb, TMDB, Rotten Tomatoes'
+critics and audience, Metacritic, Letterboxd); and how much sex and nudity, violence, profanity, alcohol and drugs, and
 frightening scenes IMDb's parental guide may report (with titles it hasn't rated hidden or shown). Titles you watched
 never show. Back goes from the options to the sections, and from there closes the filters and applies them, as *Show*
 does. Trakt applies them all (through the preview its app uses for a smart list being made, or its documented lists if
-that's gone), so a filter reaches past the unfiltered list's end. Filtered, Explore has a blue dot. Movies and Shows
+that's gone), so a filter reaches past the unfiltered list's end. Filtered, Explore has a yellow dot. Movies and Shows
 always show their source whole.
 
 The magnifier before the tabs searches Trakt (its client ID is enough, no sign-in): OK on it turns the tabs into a field
