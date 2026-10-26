@@ -203,6 +203,14 @@ for shows, status (on the air, coming, ended, canceled), each *All* at first. �
 them. Trakt filters its recommendations itself, so a filter reaches past the unfiltered list's end; a filtered tab has a
 blue dot. Explore stays unfiltered.
 
+The magnifier before the tabs searches Trakt (its client ID is enough, no sign-in): OK on it turns the tabs into a field
+and brings up the TV's keyboard. A moment after the typing stops, the
+row shows the movies and shows Trakt finds, in any language Trakt has their titles in, the most watched first; each
+card comes as it's looked up, like the picks. ↓ goes to them; ↑ or Back goes back to the field, and Back from there to
+the tabs. The microphone at the field's right end (→ from the text), or the remote's search key with the field open,
+asks the TV's voice input (Google's on Google TV): what you say is searched at once. Every answer shows, Filmix's or not: one Filmix hasn't says so on its card, and its menu (trailer, watched,
+watchlist) still works. The text stays until Home.
+
 ### Opening a title, not just its app (optional)
 
 With a free [Watchmode](https://api.watchmode.com/) key (`watchmode_key=` in `config.properties`), a pick opens its own page in the streaming app instead of the app's home. The free plan (2,500 credits a month) is enough: each title costs two requests the first time and is remembered after that. It works where the app takes the title's web address (tested: Prime Video and JioHotstar); where it doesn't, the pick just opens the app, as without a key.

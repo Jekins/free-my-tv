@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.LauncherApps;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapShader;
 import android.graphics.BlurMaskFilter;
@@ -24,10 +25,14 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.speech.RecognizerIntent;
+import android.text.Editable;
+import android.text.InputType;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextUtils;
+import android.text.TextWatcher;
 import android.view.Choreographer;
 import android.view.KeyEvent;
 import android.view.PixelCopy;
@@ -35,6 +40,9 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeProvider;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -52,7 +60,8 @@ import java.util.function.Consumer;
 
 /**
  * The home screen, styled after the Apple TV app with the macOS 27 glass:
- *  - at the top left, the tabs (Explore, Movies, Shows, Watchlist); on their line at the top right, icon-only glass buttons
+ *  - at the top left, the search's magnifier (OK: a glass field in the tabs' place, Trakt's answers in the row) and the
+ *    tabs (Explore, Movies, Shows, Watchlist); on their line at the top right, icon-only glass buttons
  *    (Live TV, HDMI Inputs, Settings), with the focused one's name below it, and before them the small crypto quotes
  *    (logo + price);
  *  - a row of cards for the selected tab: the titles recommended for right now (Recs, from Trakt or TMDB), or the
@@ -117,7 +126,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static int tabsGeneration = -1;
     private static final String[] TAB_KIND = {null, "movie", "tv", Recs.WATCHLIST};
     private static final int TABS = TAB_KIND.length;
-    private static final int Z_TOP = 4, Z_CARDS = 5;
+    private static final int Z_TOP = 4, Z_CARDS = 5, Z_SEARCH = 6;
 
     private final Activity activity;
     private final Scene scene = new Scene();
@@ -162,6 +171,39 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // The tabs, then the round buttons at the top right (up to HomeApps.MAX_TOP).
     private final Spring[] topFocus = new Spring[TABS + HomeApps.MAX_TOP];
     private final RectF[] topRects = new RectF[TABS + HomeApps.MAX_TOP];
+    // Search (Trakt's), from the magnifier before the tabs (zone Z_SEARCH: the magnifier, or the field once open). OK
+    // on it turns the tabs into a glass field and brings up the TV's keyboard; a moment after the typing stops the row
+    // shows Trakt's answers, each as it's looked up (Recs.search). ↓ goes to the answers, ↑ or Back from them to the
+    // field, Back from the field to the tabs; the text stays until Home. The keyboard types into an invisible EditText:
+    // the field is drawn here, with the tabs.
+    private static final long SEARCH_AFTER_MS = 400, CARET_MS = 530, KEYBOARD_AFTER_MS = 320;
+    private static final float SEARCH_FIELD_W = 1040;
+    private final RectF searchRect = new RectF(), fieldRect = new RectF();
+    private final Spring searchFocus = new Spring(0.26f, 0.85f, 0), searchMorph = new Spring(0.34f, 0.86f, 0);
+    private boolean searchOpen, caretOn;
+    private final EditText field;
+    private String query = "", queryLine = "", searchEmpty;
+    private float queryLineW;
+    private Paint lSearch, lSearchHint;
+    private final Runnable searchNow = this::searchQuery;
+    private final Runnable keyboardSoon = () -> {
+        if (this.running && this.searchOpen && this.zone == Z_SEARCH && !this.onMic) showKeyboard();
+    };
+    // Voice, where the TV has a voice input (Google's on Google TV): the microphone at the field's right end (→ from the
+    // text), or the remote's search key with the field open. What's said becomes the text, searched at once.
+    private static final String GOOGLE_VOICE = "com.google.android.katniss";
+    private final Intent voice;
+    private boolean onMic;      // the field's focus is on its microphone, not on the text
+    private final Spring micFocus = new Spring(0.26f, 0.85f, 0);
+    private final Runnable caretBlink = new Runnable() {
+        @Override public void run() {
+            boolean on = running && searchOpen && zone == Z_SEARCH && !onMic;
+            caretOn = on && !caretOn;
+            heroDirty = true;
+            wake();
+            if (on) handler.postDelayed(this, CARET_MS);
+        }
+    };
     // The row of picks, as on Apple TV: the focused card is wide and the others tall, each width a spring, and the row
     // scrolls only when the wide card wouldn't fit. The focus on the last card asks Recs for more; empty cards (slots) hold
     // their places, softly pulsing, until their titles are confirmed. The focused card stretches past its size once and
@@ -465,6 +507,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             addView(v);
         }
         setContentDescription("Free My TV");
+        field = searchField(a);
+        addView(field);
+        voice = voiceInput(a);
         drawerLayer.setVisibility(INVISIBLE);
         for (int i = 0; i < topFocus.length; i++) {
             topFocus[i] = new Spring(0.26f, 0.85f, 0);
@@ -519,6 +564,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         updatePalette();
         updatePicks();
         updateSleep();      // a timer just set in Settings shows at once, not at the next tick
+        restartCaret();     // back from a title opened from the search: the field may have the focus
         if (allAppsOnResume) {
             allAppsOnResume = false;
             reset(false);
@@ -540,6 +586,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         cancelReorder(true);
         closePickMenu(true);
         handler.removeCallbacks(holdStart);
+        handler.removeCallbacks(caretBlink);
+        handler.removeCallbacks(keyboardSoon);
         okHeld = holdArmed = false;
         Choreographer.getInstance().removeFrameCallback(this);
         handler.removeCallbacks(tick);
@@ -564,6 +612,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         wake();
         cancelReorder(!animated);
         closePickMenu(!animated);
+        closeSearch(!animated);
+        if (field.length() > 0) field.setText("");   // the next search starts afresh
         zone = Z_SHELF;
         shelfIndex = 0;
         sheetOpen = false;
@@ -675,6 +725,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         measure(menuLayer, width, height);
         for (View v : new View[] {menuGlass, menuItemsLayer}) measure(v, Math.max(1, menuBounds.width()), Math.max(1, menuBounds.height()));
         measure(toastLayer, Math.round(1000 * kk), Math.round(220 * kk));
+        measure(field, Math.round(SEARCH_FIELD_W * kk), Math.round(L_TABBAR_H * kk));
         setMeasuredDimension(width, height);
     }
 
@@ -703,6 +754,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         menuLayer.layout(0, 0, width, height);
         for (View v : new View[] {menuGlass, menuItemsLayer}) v.layout(menuBounds.left, menuBounds.top, menuBounds.right, menuBounds.bottom);
         place(toastLayer, (width - toastLayer.getMeasuredWidth()) / 2, 0);
+        place(field, Math.round((MARGIN - 26) * kk), Math.round(L_TABBAR_TOP * kk));   // where the field is drawn
     }
 
     private static void place(View v, int x, int y) {
@@ -724,6 +776,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (String s : new String[] {"play", "check", "hide", "bookmark_add", "bookmark_remove", "chevron_left", "chevron_right"}) {
             Symbols.warm(getContext(), s, 30 * k);   // a pick's menu, the filters
         }
+        Symbols.warm(getContext(), "search", 28 * k);   // the magnifier, at rest and focused
+        Symbols.warm(getContext(), "search", 28 * k * 1.05f);
+        Symbols.warm(getContext(), "mic", 26 * k);   // the field's microphone, at rest and focused
+        Symbols.warm(getContext(), "mic", 26 * k * 1.08f);
         layoutShelf();
         layoutStatus();
         layoutDrawer();
@@ -762,6 +818,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lEmpty = Ui.text(Ui.medium, 30 * k, L_DIM);
         lEmpty.setTextAlign(Paint.Align.CENTER);
         lBadge = Ui.text(Ui.semibold, 21 * k, L_INK);
+        lSearch = Ui.text(Ui.medium, 30 * k, L_INK);
+        lSearchHint = Ui.text(Ui.medium, 30 * k, L_DIM);
         lQuote = Ui.numbers(Ui.regular, 21 * k, L_FAINT);
         lTip = Ui.text(Ui.semibold, 25 * k, L_INK);
         lTip.setTextAlign(Paint.Align.CENTER);
@@ -852,7 +910,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             captureBehind(++menuShotId);
         }
         if (topMoving) status.invalidate();
-        heroMoving |= topMoving | cardsMoving;
+        boolean searchMoving = searchFocus.step(dt) | searchMorph.step(dt) | micFocus.step(dt);
+        heroMoving |= topMoving | cardsMoving | searchMoving;
         boolean drawerItemsMoving = step(drawerFocus, dt);
         boolean gridMoving = step(gridFocus, dt) | scroll.step(dt);
         boolean drawerMoving = drawer.step(dt);
@@ -2120,6 +2179,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         heroFocus.target = !sheetOpen && zone == Z_HERO ? 1 : 0;
         if (snap) heroFocus.snap(heroFocus.target);
         boolean topChanged = aim(topFocus, !sheetOpen && zone == Z_TOP ? topIndex : -1, snap);
+        boolean mic = searchOpen && onMic;
+        float searchTarget = !sheetOpen && zone == Z_SEARCH && !mic ? 1 : 0, micTarget = !sheetOpen && zone == Z_SEARCH && mic ? 1 : 0;
+        heroChanged |= searchFocus.target != searchTarget || micFocus.target != micTarget;
+        searchFocus.target = searchTarget;
+        micFocus.target = micTarget;
+        if (snap) {
+            searchFocus.snap(searchTarget);
+            micFocus.snap(micTarget);
+        }
+        restartCaret();
         heroChanged |= aim(cardFocus, !sheetOpen && zone == Z_CARDS ? cardIndex : -1, snap) | aimRow(snap) | topChanged;
         statusChanged |= topChanged;
         tilesDirty |= snap || tilesChanged;
@@ -2485,6 +2554,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     okDown = okHeld = false;
                 }
                 return true;
+            case KeyEvent.KEYCODE_SEARCH:
+                // With the search's field open, the remote's search key speaks into it; elsewhere it's the TV's own.
+                if (!searchOpen || voice == null) return false;
+                if (down && e.getRepeatCount() == 0) startVoice();
+                return true;
             case KeyEvent.KEYCODE_SETTINGS:
             case KeyEvent.KEYCODE_NOTIFICATION:
                 // The remote's Settings button (TCL's sends NOTIFICATION) opens TV Settings, as Hisense's gear does by
@@ -2512,9 +2586,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         } else if (zone == Z_DRAWER || zone == WIDGETS) {
             closeDrawer();
             retarget(false);
+        } else if (searchOpen && zone == Z_SEARCH) {
+            closeSearch(false);
+        } else if (searchOpen && zone == Z_CARDS) {
+            zone = Z_SEARCH;    // from the answers, back to the field
+            onMic = false;
+            retarget(false);
         } else if (zone != Z_SHELF) {
             zone = Z_SHELF;
             retarget(false);
+        } else if (searchOpen) {
+            closeSearch(false);
         } else {
             return;
         }
@@ -2665,6 +2747,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (drawerItems.isEmpty()) return;
             it = drawerItems.get(drawerIndex);
             r = drawerRects[drawerIndex];
+        } else if (zone == Z_SEARCH) {
+            if (!searchOpen) openSearch();
+            else if (onMic) startVoice();
+            else showKeyboard();
+            return;
         } else if (zone == Z_TOP) {
             if (topIndex < TABS) {
                 selectTab(topIndex);
@@ -2674,6 +2761,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             r = topRects[topIndex];
         } else if (zone == Z_CARDS) {
             Recs.Pick p = cardIndex < cards.size() ? cards.get(cardIndex) : null;
+            if (p != null && p.pkg == null && searchOpen) {   // an answer Filmix (or the TV's apps) hasn't: its menu still works
+                String app = Recs.onlyApp();
+                if (app != null && !recs.away(p)) showToast(Ui.trf("Couldn't open {app}.", "app", app));   // Filmix didn't answer
+                else if (app != null) showToast(Ui.trf("“{title}” isn't on {app}.", "title", p.title, "app", app));
+                else showToast(Ui.trf("“{title}” isn't on the TV's apps.", "title", p.title));
+            }
             if (p == null || p.pkg == null) return;
             it = HomeApps.app(p.pkg, Recs.serviceName(p), p.link);
             r = cardRects[cardIndex];
@@ -2850,7 +2943,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (Trakt.hasKey()) {
             menuList[menuCount++] = M_WATCHED;
             menuList[menuCount++] = M_WATCHLIST;
-            if (!Recs.WATCHLIST.equals(TAB_KIND[tab])) menuList[menuCount++] = M_HIDE;
+            String kind = rowKind();   // not recommended from the Watchlist or a search: nothing to hide there
+            if (!Recs.WATCHLIST.equals(kind) && !Recs.SEARCH.equals(kind)) menuList[menuCount++] = M_HIDE;
         }
         menuSignedIn = Trakt.hasOAuth();
         Integer r = rated.get(Recs.key(menuPick));
@@ -3380,7 +3474,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int id = p.id;
         boolean add = !recs.watchlisted(p);
         click.open();
-        if (!add && Recs.WATCHLIST.equals(TAB_KIND[tab])) {
+        if (!add && Recs.WATCHLIST.equals(rowKind())) {
             unlistAfter = p;
             closePickMenu(false);
         } else {
@@ -3805,7 +3899,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             for (int i = 0; i < others.size(); i++) out.add(a11yId(GRID, i));
             return;
         }
-        for (int i = picksOn() ? 0 : TABS; i < TABS + lightButtons.size(); i++) out.add(a11yId(Z_TOP, i));
+        if (searchOn()) out.add(a11yId(Z_SEARCH, 0));
+        for (int i = picksOn() && !searchOpen ? 0 : TABS; i < TABS + lightButtons.size(); i++) out.add(a11yId(Z_TOP, i));
         for (int i = 0; i < cards.size(); i++) out.add(a11yId(Z_CARDS, i));
         for (int i = shelfFirst; i < Math.min(shelf.size(), shelfFirst + shelfVisible); i++) out.add(a11yId(Z_SHELF, i));
         for (int i = 0; i < drawerItems.size(); i++) out.add(a11yId(Z_DRAWER, i));
@@ -3823,6 +3918,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 if (i >= TABS) return label(lightButtons, i - TABS);
                 return Ui.trf("{name}, tab {i} of {n}", "name", tabs()[i], "i", i + 1, "n", TABS);
             case Z_CARDS: return i < cards.size() ? pickText(cards.get(i)) : "";
+            case Z_SEARCH:
+                if (!searchOpen) return Ui.tr("Search");
+                if (onMic) return Ui.tr("Voice search");
+                return query.isEmpty() ? Ui.tr("Search field") : Ui.trf("Search field: {text}", "text", query);
             case Z_SHELF:
                 if (reordering && i == shelfIndex) {
                     return Ui.trf("Moving {app}, position {n} of {total}",
@@ -3862,6 +3961,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 a11yRect.set(cardRects[i]);
                 dy = heroLayer.getTranslationY();
                 break;
+            case Z_SEARCH:
+                a11yRect.set(searchOpen ? fieldRect : searchRect);
+                dy = heroLayer.getTranslationY();
+                break;
             case Z_SHELF:
                 if (i >= tileRects.length) return false;
                 a11yRect.set(tileRects[i]);
@@ -3893,6 +3996,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         switch (zone) {
             case Z_TOP: return a11yId(Z_TOP, topIndex);
             case Z_CARDS: return cardIndex < cards.size() ? a11yId(Z_CARDS, cardIndex) : -1;
+            case Z_SEARCH: return a11yId(Z_SEARCH, 0);
             case Z_SHELF: return shelf.isEmpty() ? -1 : a11yId(Z_SHELF, shelfIndex);
             case Z_DRAWER: return drawerItems.isEmpty() ? -1 : a11yId(Z_DRAWER, drawerIndex);
             case WIDGETS: return a11yId(WIDGETS, widgetIndex);
@@ -3940,10 +4044,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 widgetIndex = i;
                 break;
             case Z_TOP:
-                if (i >= TABS + lightButtons.size() || (i < TABS && !picksOn())) return;
+                if (i >= TABS + lightButtons.size() || (i < TABS && (!picksOn() || searchOpen))) return;
                 if (drawerOpen) closeDrawer();
                 topIndex = i;
                 if (i < TABS) selectTab(i);
+                break;
+            case Z_SEARCH:
+                if (!searchOn()) return;
+                if (drawerOpen) closeDrawer();
                 break;
             case Z_CARDS:
                 if (i >= cards.size()) return;
@@ -4030,6 +4138,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Text tabs; the focus pill extends 26 px past the text (the first tab's text starts at the margin).
         float pad = 26 * k, tabTop = L_TABBAR_TOP * k, tabBottom = (L_TABBAR_TOP + L_TABBAR_H) * k;
         float x = MARGIN * k - pad;
+        // Before them, the search's magnifier: a round pill as tall as a tab's, where the first tab's pill was.
+        searchRect.set(x, tabTop, x + L_TABBAR_H * k, tabBottom);
+        snap(searchRect);
+        if (searchOn()) x = searchRect.right + 4 * k;
         for (int i = 0; i < TABS; i++) {
             float tw = Math.max(lTabOn.measureText(tabs()[i]), lTab.measureText(tabs()[i]));
             topRects[i].set(x, tabTop, x + tw + 2 * pad, tabBottom);
@@ -4041,6 +4153,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             topRects[TABS + i].set(right - b, cy - b / 2, right, cy + b / 2);
             right -= b + L_BUTTON_GAP * k;
         }
+        // The open field grows from the magnifier, short of the round buttons (and the quotes or the sleep timer before them).
+        float limit = (lightButtons.isEmpty() ? CONTENT_R * k : topRects[TABS].left) - 60 * k;
+        fieldRect.set(searchRect.left, tabTop, Math.min(searchRect.left + SEARCH_FIELD_W * k, limit), tabBottom);
+        snap(fieldRect);
+        cutQuery();
         // The row: the wide card spans what two tall ones leave (three cards fill the 5-column grid exactly).
         cardGap = L_CARD_GAP * k;
         tallW = L_TALL_W * k;
@@ -4072,7 +4189,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * the background, from the focused card. Cards added at the end slide in; a different list takes its place at once.
      */
     private void updateCards() {
-        String kind = TAB_KIND[tab];
+        String kind = rowKind();
         List<Recs.Pick> list = recs.now(kind);
         boolean grew = list.size() >= cards.size() && samePicks(cards, list.subList(0, cards.size()));
         boolean changed = !samePicks(list, cards);
@@ -4097,12 +4214,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 if (!reset) fadingUntil = now + IMAGE_FADE_MS;
             }
         }
-        // The other rows' first cards too: switching tabs is instant.
-        for (String other : TAB_KIND) {
+        // The other rows' first cards too: switching tabs is instant. Not while searching: the answers' photos have the
+        // room (Recs keeps 12 ready), and the tab's come back with it.
+        for (String other : searchOpen ? new String[0] : TAB_KIND) {
             if (other == kind) continue;
             List<Recs.Pick> first = recs.now(other);
             for (int i = 0; i < Math.min(Recs.FIRST, first.size()); i++) recs.backdrop(first.get(i));
         }
+        searchEmpty = searchMessage();
         // Picks bring their own background (the focused card's, fading in); without them (no TMDB key), your photo if
         // there is one.
         boolean own = !picksOn() && Photos.on(getContext());
@@ -4111,7 +4230,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             handler.post(focusBackground);
         } else {
             Backdrop b = own ? Photos.backdrop(getContext(), ownReady) : focusedBackdrop();
-            if (b != null || (cards.isEmpty() && !own)) showBackdrop(b);
+            // A search without answers yet keeps the photo it opened over (fading to the gradient cost a full-screen
+            // fill a frame while the field opened).
+            if (b != null || (cards.isEmpty() && !own && !searchOpen)) showBackdrop(b);
         }
         if (zone == Z_CARDS && slots == 0) {
             zone = Z_SHELF;
@@ -4174,7 +4295,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         CardText t = cardWords[i];
         if (t == null) t = cardWords[i] = new CardText();
         int fresh = recs.newEpisodes(p);
-        String key = Recs.key(p) + '|' + p.title + '|' + p.meta + '|' + p.rating + '|' + fresh;
+        boolean away = searchOpen && recs.away(p);   // a search's answer Filmix (or the TV's apps) hasn't: the card says so
+        String key = Recs.key(p) + '|' + p.title + '|' + p.meta + '|' + p.rating + '|' + fresh + '|' + away;
         if (key.equals(t.key) && t.generation == Ui.generation && t.width == wideW) return;
         t.key = key;
         t.generation = Ui.generation;
@@ -4186,7 +4308,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         t.rating = p.rating > 0 ? String.format(Ui.locale(), "%.1f", p.rating) : "";
         fitPaint.set(lCardMeta);
         t.ratingW = t.rating.isEmpty() ? 0 : lCardMeta.getTextSize() * 1.1f + fitPaint.measureText(t.rating) + 22 * k;
-        t.meta = p.meta == null ? "" : TextUtils.ellipsize(p.meta, fitPaint, wideW - t.ratingW, TextUtils.TruncateAt.END).toString();
+        String meta = p.meta == null ? "" : p.meta;
+        if (away) {
+            String app = Recs.onlyApp(), where = app != null ? Ui.trf("Not on {app}", "app", app) : Ui.tr("Not on the TV's apps");
+            meta = meta.isEmpty() ? where : meta + " · " + where;
+        }
+        t.meta = TextUtils.ellipsize(meta, fitPaint, wideW - t.ratingW, TextUtils.TruncateAt.END).toString();
         t.badge = fresh > 0 ? Ui.plural("plural|one:{n} new episode|other:{n} new episodes", fresh) : "";
         t.badgeW = t.badge.isEmpty() ? 0 : Math.min(lBadge.measureText(t.badge), tallW - 76 * k);
     }
@@ -4279,9 +4406,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             return;
         }
         // Text tabs (the selected one in bold, in the main text color); with focus on the tabs, the selected one gets
-        // the white pill with a shadow and grows a little (the tvOS focus).
-        float focus = Ui.clamp(topFocus[tab].value);
-        for (int i = 0; i < TABS; i++) {
+        // the white pill with a shadow and grows a little (the tvOS focus). As the search's field takes their place,
+        // they fade away drifting right: each part's own alpha (a layer for them cost this TV's GPU a pass a frame,
+        // 40 frames a second instead of 50 as the field opened).
+        float focus = Ui.clamp(topFocus[tab].value), gone = Ui.clamp(searchMorph.value), shown = 1 - gone;
+        c.save();
+        c.translate(60 * k * gone, 0);
+        for (int i = 0; i < TABS && gone < 0.999f; i++) {
             RectF r = topRects[i];
             if (i == tab && focus > 0.01f) {
                 float s = 1 + 0.05f * focus;
@@ -4291,26 +4422,31 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 if (focus > 0.01f) {
                     tmp.set(cell);
                     tmp.offset(0, 8 * k * focus);
-                    shadow.setColor(Ui.alpha(0xFF000000, tone(0.22f, 0.4f) * focus));
+                    shadow.setColor(Ui.alpha(0xFF000000, tone(0.22f, 0.4f) * focus * shown));
                     shadows.draw(c, tmp, rr, SHADOW_BLUR * k, shadow);
                 }
                 fill.setShader(null);
-                fill.setColor(Ui.alpha(0xFFFFFFFF, focus));
+                fill.setColor(Ui.alpha(0xFFFFFFFF, focus * shown));
                 c.drawRoundRect(cell, rr, rr, fill);
             }
             Paint p = i == tab ? lTabOn : lTab;
             if (i == tab) lTabOn.setColor(blend(tone(L_INK, WHITE), L_INK, focus));   // always dark on the white pill
+            int ink = p.getColor();
+            if (shown < 1) p.setColor(Ui.alpha(ink, shown));
             float tw = p.measureText(tabs()[i]);
             c.drawText(tabs()[i], r.centerX() - tw / 2, r.centerY() + Ui.halfCap(p), p);
+            p.setColor(ink);
             if (TAB_KIND[i] != null && !recs.filter(TAB_KIND[i]).none()) {
                 // Filtered: a dot at the name's top right, in Apple's blue.
                 fill.setShader(null);
-                fill.setColor(0xFF0A84FF);
+                fill.setColor(Ui.alpha(0xFF0A84FF, shown));
                 c.drawCircle(r.centerX() + tw / 2 + 9 * k, r.centerY() - Ui.halfCap(p) - 2 * k, 5 * k, fill);
             }
         }
-        String kind = TAB_KIND[tab];
-        String empty = slots > 0 || kind == null || recs.loading(kind) ? null
+        c.restore();
+        if (searchOn()) drawSearch(c);
+        String kind = rowKind();
+        String empty = searchOpen ? searchEmpty : slots > 0 || kind == null || recs.loading(kind) ? null
                 : kind.equals(Recs.WATCHLIST) ? (Recs.canFilter() ? Ui.tr("Your Trakt watchlist is empty. Hold OK on a card to add it.")
                         : Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."))
                 : !recs.filter(kind).none() ? Ui.tr("Nothing here with these filters. Hold OK on the tab to change them.") : null;
@@ -4597,7 +4733,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case Z_SHELF:
                 // Up from an empty shelf too: move()'s older zones (the hero, the corner capsule) aren't drawn any more.
                 if (dy >= 0) return false;
-                if (cards.isEmpty()) {
+                if (cards.isEmpty() && searchOpen) {
+                    zone = Z_SEARCH;
+                    onMic = false;
+                } else if (cards.isEmpty()) {
                     if (!picksOn() && lightButtons.isEmpty()) return true;   // no tabs and no buttons above
                     zone = Z_TOP;
                     topIndex = picksOn() ? tab : 3;
@@ -4610,7 +4749,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     int next = cardIndex + dx;
                     // Onto the last card: three more (empty at first, while Recs looks their titles up), so the next one's
                     // edge shows past it as the row scrolls.
-                    if (next >= slots - 1 && dx > 0 && recs.more(TAB_KIND[tab])) updateCards();
+                    if (next >= slots - 1 && dx > 0 && recs.more(rowKind())) updateCards();
                     if (next < 0 || next >= slots) {
                         bump(dx);
                         return true;
@@ -4620,6 +4759,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     // redraws the sky (JMGO N1S Ultra: 59 frames a second along the row, fades included).
                     handler.removeCallbacks(focusBackground);
                     handler.post(focusBackground);
+                } else if (dy < 0 && searchOpen) {
+                    zone = Z_SEARCH;    // the field's text
+                    onMic = false;
                 } else if (dy < 0) {
                     zone = Z_TOP;
                     topIndex = tab;     // as on Apple TV: moving up to the tabs focuses the selected tab
@@ -4630,6 +4772,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 break;
             case Z_TOP:
                 if (dx != 0) {
+                    // Past the first tab, the magnifier; with the field open (the tabs gone), the field.
+                    if (searchOn() && (searchOpen ? topIndex + dx < TABS : topIndex == 0 && dx < 0)) {
+                        zone = Z_SEARCH;
+                        onMic = voice != null;   // from the round buttons, the field's nearest end
+                        break;
+                    }
                     int next = Math.max(picksOn() ? 0 : TABS, Math.min(TABS - 1 + lightButtons.size(), topIndex + dx));
                     if (next == topIndex) return true;
                     topIndex = next;
@@ -4642,12 +4790,281 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     return true;
                 }
                 break;
+            case Z_SEARCH:
+                if (searchOpen) {
+                    // The field: → ← between its text and its microphone, ↓ to the answers (the keyboard goes); ↑
+                    // stays, so a key the keyboard lets through doesn't take the focus away while typing.
+                    if (dx != 0 && voice != null && (dx > 0) != onMic) {
+                        onMic = dx > 0;
+                        releaseField();
+                    } else if (dy > 0) {
+                        releaseField();
+                        zone = slots == 0 ? Z_SHELF : Z_CARDS;
+                    } else {
+                        return true;
+                    }
+                } else if (dx > 0) {
+                    zone = Z_TOP;
+                    topIndex = 0;
+                    selectTab(0);
+                } else if (dy > 0) {
+                    zone = slots == 0 ? Z_SHELF : Z_CARDS;
+                } else if (dy < 0 && !lightButtons.isEmpty()) {
+                    zone = Z_TOP;
+                    topIndex = TABS;
+                } else {
+                    return true;
+                }
+                break;
             default:
                 return false;
         }
         retarget(false);
         click.move();
         return true;
+    }
+
+    // MARK: - Search
+
+    /** Search needs Trakt (its client ID) and the picks' TMDB key (each answer's details and photo). */
+    private boolean searchOn() {
+        return picksOn() && Trakt.hasKey();
+    }
+
+    private void searchQuery() {
+        recs.search(query);
+    }
+
+    /** The row's kind: the search's answers while its field is open, else the selected tab's. */
+    private String rowKind() {
+        return searchOpen ? Recs.SEARCH : TAB_KIND[tab];
+    }
+
+    /**
+     * The keyboard's target: never drawn (alpha 0; the field is drawn with the tabs) and focusable only while the
+     * search is open, so the home screen keeps the focus otherwise. Its Search key goes to the answers.
+     */
+    private EditText searchField(Activity a) {
+        EditText e = new EditText(a);
+        e.setAlpha(0);
+        e.setBackground(null);
+        e.setSingleLine(true);
+        e.setCursorVisible(false);   // its blinking would redraw it for nothing
+        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        e.setImeOptions(EditorInfo.IME_ACTION_SEARCH | EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN);
+        e.setFocusable(false);
+        e.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);   // TalkBack reads the field (Spoken)
+        e.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                query = s.toString();
+                cutQuery();
+                restartCaret();
+                wake();
+                handler.removeCallbacks(searchNow);
+                if (query.trim().isEmpty()) searchNow.run();
+                else handler.postDelayed(searchNow, SEARCH_AFTER_MS);   // once the typing stops
+            }
+        });
+        e.setOnEditorActionListener((v, action, event) -> {
+            handler.removeCallbacks(searchNow);
+            searchNow.run();
+            releaseField();
+            if (searchOpen && zone == Z_SEARCH && !cards.isEmpty()) {
+                zone = Z_CARDS;
+                retarget(false);
+            }
+            return true;
+        });
+        return e;
+    }
+
+    /** OK on the magnifier: the tabs become the field (the last text still in it), with the keyboard up. */
+    private void openSearch() {
+        if (searchOpen || !searchOn()) return;
+        searchOpen = true;
+        zone = Z_SEARCH;
+        onMic = false;
+        searchMorph.target = 1;
+        cardIndex = 0;
+        rowReset = true;
+        updateCards();
+        retarget(false);
+        click.open();
+        // The keyboard once the field has opened: both at once (another window sliding up, drawn by Gboard on the same
+        // GPU) took this TV to 35 frames a second.
+        handler.postDelayed(keyboardSoon, KEYBOARD_AFTER_MS);
+    }
+
+    /** Back to the tabs and the selected tab's row; the focus on the magnifier (or where it was, below). */
+    private void closeSearch(boolean snap) {
+        if (!searchOpen) return;
+        searchOpen = false;
+        handler.removeCallbacks(keyboardSoon);
+        releaseField();
+        searchMorph.target = 0;
+        if (snap) searchMorph.snap(0);
+        if (zone == Z_CARDS) zone = Z_SEARCH;
+        cardIndex = 0;
+        rowReset = true;
+        updateCards();
+        retarget(snap);
+    }
+
+    private void showKeyboard() {
+        field.setFocusable(true);
+        field.setFocusableInTouchMode(true);
+        field.requestFocus();
+        field.setSelection(field.length());
+        InputMethodManager m = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (m != null) m.showSoftInput(field, 0);
+    }
+
+    /**
+     * The TV's voice input for the search, Google's when there is more than one (Google TV also lists its speech
+     * engine's): named outright, so Android doesn't ask which one. Null without any.
+     */
+    private static Intent voiceInput(Context c) {
+        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        ResolveInfo pick = null;
+        for (ResolveInfo r : c.getPackageManager().queryIntentActivities(i, 0)) {
+            if (pick == null || GOOGLE_VOICE.equals(r.activityInfo.packageName)) pick = r;
+        }
+        if (pick == null) return null;
+        return i.setClassName(pick.activityInfo.packageName, pick.activityInfo.name)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+    }
+
+    /** OK on the microphone (or the remote's search key): the TV listens, and onVoice gets what was said. */
+    private void startVoice() {
+        if (voice == null) return;
+        releaseField();
+        click.open();
+        Intent i = new Intent(voice).putExtra(RecognizerIntent.EXTRA_LANGUAGE, Ui.locale().toLanguageTag())
+                .putExtra(RecognizerIntent.EXTRA_PROMPT, Ui.tr("search|Say the name of a movie or show"));
+        try {
+            activity.startActivityForResult(i, HomeActivity.VOICE);
+        } catch (ActivityNotFoundException | SecurityException e) {
+            showToast(Ui.trf("Couldn't open {app}.", "app", Ui.tr("Voice search")));
+        }
+    }
+
+    /** What was said (null: nothing): the field's text, searched at once, the focus on the text. */
+    void onVoice(Intent data) {
+        ArrayList<String> said = data == null ? null : data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+        String text = said == null || said.isEmpty() || said.get(0) == null ? "" : said.get(0).trim();
+        if (!searchOpen || text.isEmpty()) return;
+        field.setText(text);
+        handler.removeCallbacks(searchNow);
+        searchNow.run();
+        zone = Z_SEARCH;
+        onMic = false;
+        retarget(false);
+    }
+
+    /** The keyboard goes, and the home screen takes the keys back until OK on the field brings it up again. */
+    private void releaseField() {
+        InputMethodManager m = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (m != null) m.hideSoftInputFromWindow(field.getWindowToken(), 0);
+        field.setFocusable(false);   // focused, it lets the focus go
+        requestFocus();
+    }
+
+    /**
+     * The caret shows (and blinks) while the field has the focus. Elsewhere nothing is redrawn for it: retarget() calls
+     * this on every move, the shelf's too.
+     */
+    private void restartCaret() {
+        handler.removeCallbacks(caretBlink);
+        if (!running || !searchOpen || zone != Z_SEARCH || onMic) return;
+        if (!caretOn) {
+            caretOn = true;
+            heroDirty = true;
+        }
+        handler.postDelayed(caretBlink, CARET_MS);
+        wake();
+    }
+
+    /** The text as the field shows it: its end, cut at the start when it's longer than the field. */
+    private void cutQuery() {
+        if (lSearch == null) return;
+        float room = fieldRect.width() - L_TABBAR_H * k - (voice != null ? L_TABBAR_H + 12 : 40) * k;   // the microphone's room
+        fitPaint.set(lSearch);
+        queryLine = TextUtils.ellipsize(query, fitPaint, Math.max(0, room), TextUtils.TruncateAt.START).toString();
+        queryLineW = lSearch.measureText(queryLine);
+        heroDirty = true;
+    }
+
+    /** What the empty search row says (null: nothing), made when the row changes, never while drawing. */
+    private String searchMessage() {
+        if (!searchOpen || slots > 0) return null;
+        switch (recs.searchState()) {
+            case Recs.SEARCH_IDLE: return Ui.tr("Type the name of a movie or show.");
+            case Recs.SEARCH_FAILED: return Ui.tr("Trakt didn't answer. Try again in a moment.");
+            case Recs.SEARCH_DONE: return Ui.trf("Nothing found for “{text}”.", "text", recs.searchText());
+            default: return null;
+        }
+    }
+
+    /**
+     * The magnifier, and the field it becomes: a round pill like a focused tab's (white, with a shadow, when focused);
+     * open, it stretches to the field's width as the tabs fade away, glass while the focus is on the answers. In it, the
+     * text (or what to type), and the caret while it has the focus.
+     */
+    private void drawSearch(Canvas c) {
+        float f = Ui.clamp(searchFocus.value), m = Ui.clamp(searchMorph.value);
+        float s = 1 + 0.05f * f * (1 - m);   // the magnifier grows like a tab's pill; the field doesn't
+        float right = searchRect.right + (fieldRect.right - searchRect.right) * Math.max(0, searchMorph.value);
+        float cx = (searchRect.left + right) / 2, cy = searchRect.centerY(), hw = (right - searchRect.left) / 2 * s;
+        float hh = searchRect.height() / 2 * s;
+        cell.set(cx - hw, cy - hh, cx + hw, cy + hh);
+        float rr = hh;
+        if (f > 0.01f) {
+            tmp.set(cell);
+            tmp.offset(0, 8 * k * f);
+            shadow.setColor(Ui.alpha(0xFF000000, tone(0.22f, 0.4f) * f));
+            shadows.draw(c, tmp, rr, SHADOW_BLUR * k, shadow);
+        }
+        scene.clear(c, cell, rr, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), m * (1 - f));
+        if (f > 0.01f) {
+            fill.setShader(null);
+            fill.setColor(Ui.alpha(0xFFFFFFFF, f));
+            c.drawRoundRect(cell, rr, rr, fill);
+        }
+        // Dark on the white pill; at rest, the magnifier as gray as a tab's name, the field's ink as dark as the text.
+        int ink = blend(tone(L_INK, WHITE), L_INK, f);
+        Symbols.draw(getContext(), c, "search", cell.left + searchRect.width() / 2 * s, cy, 28 * k * s,
+                blend(m > 0 ? tone(L_INK, WHITE) : lTab.getColor(), L_INK, f));
+        float text = smoothstep(0.55f, 1, m);
+        if (text < 0.01f) return;
+        float x = cell.left + L_TABBAR_H * k, base = cy + Ui.halfCap(lSearch);
+        c.save();
+        c.clipRect(cell);
+        if (queryLine.isEmpty()) {
+            lSearchHint.setColor(Ui.alpha(blend(tone(L_DIM, 0xFF8E8E93), L_DIM, f), text));
+            c.drawText(Ui.tr("search|Movies and shows"), x, base, lSearchHint);
+        } else {
+            lSearch.setColor(Ui.alpha(ink, text));
+            c.drawText(queryLine, x, base, lSearch);
+        }
+        if (searchOpen && zone == Z_SEARCH && !onMic && caretOn) {
+            float cxr = x + queryLineW + 2 * k, half = 19 * k;
+            fill.setColor(Ui.alpha(0xFF0A84FF, text));
+            c.drawRoundRect(cxr, cy - half, cxr + 3 * k, cy + half, 1.5f * k, 1.5f * k, fill);
+        }
+        if (voice != null) {
+            // The microphone at the field's right end: focused, a white circle of its own on the field's glass.
+            float mf = Ui.clamp(micFocus.value), ms = 1 + 0.08f * mf, mx = cell.right - hh, mr = hh - 6 * k;
+            if (mf > 0.01f) {
+                fill.setColor(Ui.alpha(0xFFFFFFFF, mf * text));
+                c.drawCircle(mx, cy, mr * ms, fill);
+            }
+            Symbols.draw(getContext(), c, "mic", mx, cy, 26 * k * ms,
+                    Ui.alpha(blend(blend(tone(L_DIM, 0xFF8E8E93), L_DIM, f), L_INK, mf), text));
+        }
+        c.restore();
     }
 
     private static int nearest(RectF[] rects, int count, float x) {
