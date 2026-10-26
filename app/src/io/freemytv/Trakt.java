@@ -206,6 +206,14 @@ final class Trakt {
         sync("/sync/ratings", kind, tmdbId, Math.max(1, Math.min(10, rating)));
     }
 
+    /**
+     * Keeps a title out of the signed-in person's recommendations from now on (their hidden list, which trakt.tv can
+     * undo). By TMDB id, which /recommendations/{id} doesn't take. Network: never on the main thread.
+     */
+    static void hideRecommendation(String kind, int tmdbId) throws IOException {
+        sync("/users/hidden/recommendations", kind, tmdbId, 0);
+    }
+
     private static void sync(String path, String kind, int tmdbId, int rating) throws IOException {
         String clientId = Config.TRAKT_CLIENT_ID.trim();
         if (clientId.isEmpty() || !hasOAuth()) throw new IOException("not signed in to Trakt");

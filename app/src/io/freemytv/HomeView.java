@@ -95,9 +95,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final long TOAST_MS = 6000, FADE_MS = 800;
     /** Blur radii of the shadow and shadowDeep paints (Shadows needs them to draw the same blur on older TVs). */
     private static final float SHADOW_BLUR = 26, DEEP_BLUR = 30;
-    private static final int SKY = 0, HERO = 1, STATUS = 2, PLATTER = 3, TILES = 4, DRAWER = 5, SHEET = 6, TOAST = 7, MENU = 8, MENU_GLASS = 9, MENU_ITEMS = 10, MENU_SHARP = 11;
+    private static final int SKY = 0, HERO = 1, STATUS = 2, PLATTER = 3, TILES = 4, DRAWER = 5, SHEET = 6, TOAST = 7, MENU = 8, MENU_GLASS = 9, MENU_ITEMS = 10, MENU_SHARP = 11, SKY_IMAGES = 12;
     private static final int Z_STATUS = 0, Z_HERO = 1, Z_SHELF = 2, Z_DRAWER = 3;
     private static final ExecutorService LOADER = Executors.newSingleThreadExecutor();
+    private static final ExecutorService SHOTS = Executors.newSingleThreadExecutor();   // the menu's copy of the screen
     // Light design (the L_ constants): title, tab bar, three recommendation cards and the shelf.
     // The tab bar is a 68 px capsule; the cards sit on the 5-column grid (the wide one spans 3).
     private static final float L_TITLE_BASE = 130, L_TABBAR_TOP = 158, L_TABBAR_H = 68, L_CARDS_TOP = 262, L_CARD_H = 442;
@@ -136,7 +137,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         @Override public void hold(int id) { a11yHold(); }
     });
     private final RectF a11yRect = new RectF();
-    private final Layer sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass,
+    private final Layer sky, skyImages, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass,
             menuItemsLayer, toastLayer;
     private int zone = Z_SHELF;
 
@@ -174,7 +175,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private float[] cardX = new float[0], cardW = new float[0];   // where each slot is drawn this frame
     private long[] imageAt = new long[0];     // when each card's photo arrived (0 = not yet): it fades in
     private long fadingUntil;
-    private static final long IMAGE_FADE_MS = 260, FOCUS_REST_MS = 1200;
+    private static final long IMAGE_FADE_MS = 260, FOCUS_REST_MS = 250, BG_FADE_MS = 600;
     private final Path star = new Path();   // the rating's star, 1 unit across, drawn scaled
     private final Runnable focusBackground = this::backgroundFromFocus;
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
@@ -232,6 +233,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int pickIndex, heroSlide = 1;
     private Hero hero, heroFrom;
     private long heroFadeAt, bgFadeAt;
+    private int bgFrames;
     private final Spring heroFocus = new Spring(0.28f, 0.85f, 0);
     private final RectF heroButton = new RectF();
     private Backdrop bgFrom, bgTo;     // null = gradient (no photo)
@@ -287,6 +289,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private TextPaint titlePaint, gridLabel, toastPaint;
     private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint imagePaint = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
+    private final RectF skyRect = new RectF(0, 0, Backdrop.GW, Backdrop.GH);
     private final Paint shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint shadowSoft = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint shadowDeep = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -296,6 +299,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint sheen = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint logoPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint veil = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint tileFill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -306,6 +310,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private LinearGradient tileGlow, cardSheen;
     private float tileShaderH, cardSheenH;
     private LinearGradient rowSheen, rowRim;
+    private final RectF logoRect = new RectF();
     private final Paint starPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private android.graphics.ColorFilter veilFilter;
     private float veilAmount = -1;
@@ -359,6 +364,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             shadows.dither = dark() > 0.5f;
             switch (kind) {
                 case SKY: drawSky(c); break;
+                case SKY_IMAGES: drawSkyImages(c); break;
                 case HERO: drawLightTop(c); break;
                 case STATUS: drawLightButtons(c); break;
                 case PLATTER: drawPlatter(c); break;
@@ -430,6 +436,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (launcherApps != null) launcherApps.registerCallback(packages, handler);
         setFocusable(true);
         sky = new Layer(a, SKY);
+        skyImages = new Layer(a, SKY_IMAGES);
         heroLayer = new Layer(a, HERO);
         status = new Layer(a, STATUS);
         platter = new Layer(a, PLATTER);
@@ -445,8 +452,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Not on Android 8 to 11: on older GPUs (a Mi Box 3's Mali-450) redrawing and compositing a big layer on every
         // frame cost more than drawing straight to the screen (measured: focus on the picks 33 → 12 ms a frame, the
         // drawer 19 → 17 ms).
-        for (View v : new View[] {heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass, menuItemsLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
-        for (View v : new View[] {sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer,
+        for (View v : new View[] {skyImages, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass, menuItemsLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
+        for (View v : new View[] {sky, skyImages, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer,
                 menuGlass, menuItemsLayer, toastLayer}) {
             v.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);   // TalkBack reads the items (Spoken)
             addView(v);
@@ -639,7 +646,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void invalidateAll() {
-        for (View v : new View[] {sky, heroLayer, status, platter, tiles, drawerLayer}) v.invalidate();
+        for (View v : new View[] {sky, skyImages, heroLayer, status, platter, tiles, drawerLayer}) v.invalidate();
     }
 
     // MARK: - Size and layers
@@ -648,6 +655,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int width = MeasureSpec.getSize(widthSpec), height = MeasureSpec.getSize(heightSpec);
         float kk = width / 1920f;
         measure(sky, width, height);
+        measure(skyImages, Backdrop.GW, Backdrop.GH);
         measure(heroLayer, width, Math.round(790 * kk));
         measure(status, Math.round(1160 * kk), Math.round(240 * kk));
         // Sized to what they draw (the glass and its shadow; the grown tiles and their shadows): smaller layers are
@@ -671,6 +679,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int width = r - l, height = b - t;
         float kk = width / 1920f;
         sky.layout(0, 0, width, height);
+        skyImages.layout(0, 0, Backdrop.GW, Backdrop.GH);
+        skyImages.setPivotX(0);
+        skyImages.setPivotY(0);
+        skyImages.setScaleX(width / (float) Backdrop.GW);
+        skyImages.setScaleY(height / (float) Backdrop.GH);
         place(heroLayer, 0, 0);
         place(status, width - status.getMeasuredWidth(), 0);
         place(platter, 0, Math.round(750 * kk));
@@ -701,6 +714,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         updateClock();
         Symbols.warm(getContext(), "bell", 26 * k);
         Symbols.warm(getContext(), "bedtime", 21 * k);   // the sleep timer's "Off in", at lQuote's size
+        for (String s : new String[] {"play", "check", "thumb_down"}) Symbols.warm(getContext(), s, 30 * k);   // a pick's menu
         layoutShelf();
         layoutStatus();
         layoutDrawer();
@@ -804,9 +818,21 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean statusMoving = step(statusFocus, dt);
         boolean heroMoving = heroFocus.step(dt);
         boolean topMoving = step(topFocus, dt);
-        // The row: lift, widths, scroll and the bump at its end; empty cards pulse while their titles load.
+        // The menu has faded: a title hidden from it leaves the row, and the row slides back.
+        if (!menuOpen && menuWarm == 0 && menu.value <= 0.002f) {
+            if (hideAfter != null) recs.hide(hideAfter);
+            hideAfter = null;
+            menuShift.target = 0;
+        }
+        // The row: lift, widths, scroll, its shift for the menu and the bump at its end; empty cards pulse while their
+        // titles load.
         boolean cardsMoving = step(cardFocus, dt) | step(cardWide, dt) | rowScroll.step(dt) | rowNudge.step(dt)
-                | slots > cards.size() | up < fadingUntil;
+                | menuShift.step(dt) | slots > cards.size() | up < fadingUntil;
+        if (menuWaitsRow && Math.abs(menuShift.value - menuShift.target) < 0.5f && Math.abs(menuShift.velocity) < 30 * k) {
+            menuWaitsRow = false;   // the frame on screen now has the card where the menu needs it
+            placeMenu();
+            captureBehind(++menuShotId);
+        }
         if (topMoving) status.invalidate();
         heroMoving |= topMoving | cardsMoving;
         boolean drawerItemsMoving = step(drawerFocus, dt);
@@ -850,6 +876,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean toastFading = tickToast(up);
         boolean heroFading = tickHeroFade(up);
         boolean bgFading = tickBackgroundFade(up);
+        // The glass follows the background on every fourth frame (it changes slowly), the shelf's and the buttons' on
+        // different frames: redrawing both on every frame of the fade took this TV from 51 to 47 frames a second.
+        int glassStep = bgFading ? (bgFadeAt == 0 ? 3 : ++bgFrames % 4) : -1;
+        boolean shelfGlass = glassStep == 0 || glassStep == 3, buttonsGlass = glassStep == 2 || glassStep == 3;
         boolean nightMoving = tickNight(up);
 
         if (drawerMoving || sheetMoving || motionDirty) updateMotion();
@@ -858,12 +888,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // they rise; the drawer is drawn resting in place; the glass shelf is redrawn once the drawer stops, so the
         // glass shows the background where it ended up.
         if (tilesMoving || tilesDirty) tiles.invalidate();
-        if (statusMoving || statusDirty || bgFading) status.invalidate();
+        if (statusMoving || statusDirty || buttonsGlass) status.invalidate();
         if (heroMoving || heroDirty || heroFading) heroLayer.invalidate();
-        if (drawerItemsMoving || drawerDirty || bgFading) drawerLayer.invalidate();
+        if (drawerItemsMoving || drawerDirty || buttonsGlass) drawerLayer.invalidate();
         if (gridMoving || gridDirty) sheetLayer.invalidate();
-        if (drawerMoving || bgFading) sky.invalidate();
-        if (bgFading || (drawerWasMoving && !drawerMoving)) platter.invalidate();
+        if (drawerMoving || bgFading) {
+            sky.invalidate();
+            skyImages.invalidate();
+        }
+        if (shelfGlass || (drawerWasMoving && !drawerMoving)) platter.invalidate();
         drawerWasMoving = drawerMoving;
         tilesDirty = statusDirty = heroDirty = drawerDirty = gridDirty = motionDirty = false;
         if (updateClock()) {
@@ -918,6 +951,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Under the menu's opaque blurred copy nothing needs drawing: transparent, not invisible, so the GPU keeps their
         // layers and the screen comes back without redrawing them.
         sky.setAlpha(menuCovers ? 0 : 1);
+        skyImages.setAlpha(menuCovers ? 0 : 1);
         if (menuCovers) for (View v : new View[] {heroLayer, status, platter, tiles}) v.setAlpha(0);
         float da = home * smoothstep(0.1f, 0.6f, dc);
         drawerLayer.setTranslationY((1 - d) * shift);
@@ -971,6 +1005,21 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void updatePicks() {
         if (labelPaint == null) return;
         updateCards();
+    }
+
+    /** Where the one card missing from `now` was in `before` (the rest in the same order, maybe more after); else -1. */
+    private static int goneAt(List<Recs.Pick> before, List<Recs.Pick> now) {
+        int gone = -1;
+        for (int i = 0, j = 0; i < before.size(); i++) {
+            if (j < now.size() && Recs.key(before.get(i)).equals(Recs.key(now.get(j)))) {
+                j++;
+            } else if (gone < 0) {
+                gone = i;
+            } else {
+                return -1;
+            }
+        }
+        return gone;
     }
 
     private static boolean samePicks(List<Recs.Pick> a, List<Recs.Pick> b) {
@@ -1041,9 +1090,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Swaps the background with a cross-fade (from one image to another, from the gradient to an image, or back). */
     private void showBackdrop(Backdrop b) {
         if (b == bgTo) return;
+        wake();     // idle, the frame loop runs once a second: the fade would be over before its first frame
         long up = SystemClock.uptimeMillis();
         // In the middle of another swap, start from whichever is more visible.
-        if (bgFadeAt == 0 || fadeEase(bgFadeAt, up) >= 0.5f) bgFrom = bgTo;
+        if (bgFadeAt == 0 || fadeEase(bgFadeAt, up, BG_FADE_MS) >= 0.5f) bgFrom = bgTo;
         bgTo = b;
         bgFadeAt = up;
         nightPair = false;
@@ -1156,6 +1206,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         heroDirty = statusDirty = tilesDirty = drawerDirty = true;
         sky.invalidate();
+        skyImages.invalidate();
         platter.invalidate();
     }
 
@@ -1192,7 +1243,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private boolean tickBackgroundFade(long up) {
         if (bgFadeAt == 0) return false;
-        float e = fadeEase(bgFadeAt, up);
+        float e = fadeEase(bgFadeAt, up, BG_FADE_MS);
         if (bgTo != null && bgFrom != null && glassOf(bgFrom) != null && glassOf(bgTo) != null) {
             if (drawerLayer.getVisibility() == VISIBLE || toast != null) {
                 int[] from = frostOf(bgFrom), to = frostOf(bgTo);
@@ -1203,12 +1254,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         if (e >= 1) {
             bgFadeAt = 0;
+            // Two photos in the glass, now all the second one: it stays so (the next change sets the glass anew), with no
+            // image to upload on the frame the fade ends.
+            boolean pair = bgTo != null && bgFrom != null && glassOf(bgFrom) != null && glassOf(bgTo) != null;
             bgFrom = null;
             if (bgTo == null) {
                 neutralGlass();
             } else {
                 scene.setFrost(frostOf(bgTo));
-                if (glassOf(bgTo) != null) scene.setGlassImage(glassOf(bgTo));
+                if (!pair && glassOf(bgTo) != null) scene.setGlassImage(glassOf(bgTo));
             }
         }
         return true;
@@ -1261,9 +1315,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void drawImage(Canvas c, Bitmap image, float alpha) {
+        drawImage(c, image, alpha, screen);
+    }
+
+    private void drawImage(Canvas c, Bitmap image, float alpha, RectF to) {
         if (image == null || alpha <= 0.004f) return;
         imagePaint.setAlpha(Math.round(255 * Math.min(1, alpha)));
-        c.drawBitmap(image, null, screen, imagePaint);
+        c.drawBitmap(image, null, to, imagePaint);
     }
 
     // MARK: - Hero
@@ -2697,16 +2755,20 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         });
     }
 
-    // MARK: - A pick's menu (OK held on its card): its trailer on YouTube; watched and rated on Trakt
+    // MARK: - A pick's menu (OK held on its card): its trailer on YouTube; watched, rated or not recommended on Trakt
 
-    private static final int M_TRAILER = 0, M_WATCHED = 1;
+    private static final int M_TRAILER = 0, M_WATCHED = 1, M_HIDE = 2;
     private static final float MENU_W = 600, MENU_ITEM_H = 88, MENU_PAD = 14, MENU_GAP = 6;
     /** A rating goes to Trakt this long after the last star pressed (or as the menu closes): one request, not one a press. */
     private static final long RATE_AFTER_MS = 1200;
     private static final String YOUTUBE = "com.google.android.youtube.tv";
     private final Spring menu = new Spring(0.34f, 0.86f, 0);
-    private final Spring[] menuFocus = {new Spring(0.26f, 0.85f, 0), new Spring(0.26f, 0.85f, 0)};
-    private final Spring[] starFocus = new Spring[5];
+    private final Spring[] menuFocus = {new Spring(0.26f, 0.85f, 0), new Spring(0.26f, 0.85f, 0), new Spring(0.26f, 0.85f, 0)};
+    private final Spring[] starFocus = new Spring[10];   // Trakt's own 1 to 10 (five stars with halves)
+    /** While the menu is open, its card goes to the row's left end and the menu takes its right: the row's shift. */
+    private final Spring menuShift = new Spring(0.2f, 1, 0);
+    private boolean menuWaitsRow;   // the screen is copied, and the menu shown, once the row stops there
+    private Recs.Pick hideAfter;    // "Don't recommend": it leaves the row once the menu has faded
     private boolean menuOpen, menuDirty, menuBackDirty, menuRight, menuCovers, menuSignedIn;   // signed in to Trakt: read once as it opens (a file)
     private Recs.Pick menuPick;
     private int menuCard, menuIndex, starIndex, menuShotId, menuWarm;
@@ -2717,9 +2779,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private Paint menuText;
     private final RectF menuRect = new RectF();   // the panel at rest, on screen
     private final Rect menuBounds = new Rect();   // its two layers: the panel and room for its shadow
-    // Trakt, per title (Recs.key): marked watched from here; the stars chosen; the stars sent (or on their way)
-    private final Set<String> watched = new HashSet<>();
-    private final Map<String, Float> rated = new HashMap<>(), ratedSent = new HashMap<>();
+    // Trakt, per title (Recs.key): marked watched or hidden from here; the stars chosen; the stars sent (or on their way)
+    private final Set<String> watched = new HashSet<>(), hiding = new HashSet<>();
+    private final Map<String, Integer> rated = new HashMap<>(), ratedSent = new HashMap<>();
     private Recs.Pick ratePick;
     private final Runnable rateNow = this::sendRating;
     private final Runnable menuFallback = () -> showMenu(menuShotId);
@@ -2731,7 +2793,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private int menuItems() {
-        return Trakt.hasKey() ? 2 : 1;
+        return Trakt.hasKey() ? 3 : 1;
     }
 
     /** The second item shows the stars once the title is marked watched (or rated) from here. */
@@ -2751,15 +2813,21 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         menuCard = cardIndex;
         menuIndex = M_TRAILER;
         menuSignedIn = Trakt.hasOAuth();
-        Float r = rated.get(Recs.key(menuPick));
-        starIndex = r == null ? 2 : Math.max(0, (int) Math.ceil(r) - 1);
+        Integer r = rated.get(Recs.key(menuPick));
+        starIndex = r == null ? 5 : r - 1;
         aimMenu(true);
         menuShot = menuSharp = null;
         handler.removeCallbacks(focusBackground);   // the screen's copy would go stale
-        placeMenu();
+        // The card goes to the row's left end, the menu on its right: where it already is, the menu opens at once;
+        // elsewhere the row slides there first, and the screen is copied once it stops (doFrame).
+        menuShift.target = menuCard < slots ? Math.max(0, cardRects[menuCard].left - MARGIN * k) : 0;
+        menuWaitsRow = Math.abs(menuShift.value - menuShift.target) > 0.5f;
         menuBackDirty = true;
         click.open();
-        captureBehind(++menuShotId);
+        if (!menuWaitsRow) {
+            placeMenu();
+            captureBehind(++menuShotId);
+        }
         wake();
     }
 
@@ -2767,31 +2835,38 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * The screen, copied full size (it stands in for the home screen while the menu fades), and from it a small copy at
      * the glass's image size (Backdrop.GW × GH), blurred like Backdrop's photos (~35 px at full size) and dimmed a
      * little: the menu fades in over it, and the panel's glass shows the same copy, so it bends what is really behind it
-     * (its own Scene: the shelf's glass keeps the photo). Without the copy within 250 ms (PixelCopy refused or slow),
-     * over a plain dim and the shelf's kind of glass.
+     * (its own Scene: the shelf's glass keeps the photo). The small copy is made on another thread (~100 ms on this TV,
+     * which the frames on screen don't wait for). Without the copy within 250 ms (PixelCopy refused or slow), over a
+     * plain dim and the shelf's kind of glass.
      */
     private void captureBehind(int id) {
         handler.postDelayed(menuFallback, 250);
-        int sw = Backdrop.GW, sh = Backdrop.GH;
+        int sw = Backdrop.GW, sh = Backdrop.GH, radius = Math.round(8 * sw / (w / 4f)), keep = Math.round(256 * (1 - tone(0.1f, 0.3f)));
         Bitmap full = Bitmap.createBitmap(Math.max(1, w), Math.max(1, h), Bitmap.Config.ARGB_8888);
         try {
             PixelCopy.request(activity.getWindow(), full, result -> {
-                if (result == PixelCopy.SUCCESS && id == menuShotId && menuOpen) {
-                    int[] px = Backdrop.reduce(full, sw, sh, Math.round(8 * sw / (w / 4f)), 3);
-                    float keep = 1 - tone(0.1f, 0.3f);
+                if (result != PixelCopy.SUCCESS || id != menuShotId || !menuOpen) {
+                    showMenu(id);
+                    return;
+                }
+                SHOTS.execute(() -> {
+                    int[] px = Backdrop.reduce(full, sw, sh, radius, 3);
                     for (int i = 0; i < px.length; i++) {
                         int c = px[i];
-                        px[i] = 0xFF000000 | Math.round(((c >> 16) & 255) * keep) << 16 | Math.round(((c >> 8) & 255) * keep) << 8
-                                | Math.round((c & 255) * keep);
+                        px[i] = 0xFF000000 | (((c >> 16) & 255) * keep >> 8) << 16 | (((c >> 8) & 255) * keep >> 8) << 8 | (c & 255) * keep >> 8;
                     }
-                    if (menuScene == null) menuScene = new Scene(false);
-                    menuScene.setSize(w, h);
-                    menuScene.setGlassImage(px);
-                    menuShot = Bitmap.createBitmap(px, sw, sh, Bitmap.Config.ARGB_8888);
-                    menuSharp = full;
-                    menuBackDirty = true;
-                }
-                showMenu(id);
+                    Bitmap shot = Bitmap.createBitmap(px, sw, sh, Bitmap.Config.ARGB_8888);
+                    handler.post(() -> {
+                        if (id != menuShotId || !menuOpen) return;
+                        if (menuScene == null) menuScene = new Scene(false);
+                        menuScene.setSize(w, h);
+                        menuScene.setGlassImage(px);
+                        menuShot = shot;
+                        menuSharp = full;
+                        menuBackDirty = true;
+                        showMenu(id);
+                    });
+                });
             }, handler);
         } catch (IllegalArgumentException e) {   // no surface yet
             showMenu(id);
@@ -2813,11 +2888,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (!menuOpen && menu.value <= 0) return;
         menuOpen = false;
         menuWarm = 0;
+        menuWaitsRow = false;
         handler.removeCallbacks(menuFallback);
         if (running && zone == Z_CARDS) handler.postDelayed(focusBackground, FOCUS_REST_MS);
         sendRating();
         menu.target = 0;
-        if (snap) menu.snap(0);
+        if (snap) {
+            menu.snap(0);
+            menuShift.snap(0);
+            if (hideAfter != null) recs.hide(hideAfter);
+            hideAfter = null;
+        }
         menuDirty = true;
         wake();
     }
@@ -2830,7 +2911,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private String menuLabel(int i) {
         if (i == M_TRAILER) return Ui.tr("Watch trailer");
-        return menuPick != null && stars(menuPick) ? Ui.tr("Rate it on Trakt") : Ui.tr("Already watched");
+        if (i == M_HIDE) return Ui.tr("Don't recommend");
+        return menuPick != null && stars(menuPick) ? Ui.tr("Rate it on Trakt") : Ui.tr("Watched");
     }
 
     /** Keys while the menu is open: ↑ ↓ between its items, ← → along the stars, OK, and Back closes it. */
@@ -2851,7 +2933,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_DPAD_RIGHT:
                 if (down && menuIndex == M_WATCHED && stars(menuPick)) {
-                    int next = Math.max(0, Math.min(4, starIndex + (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1)));
+                    int next = Math.max(0, Math.min(starFocus.length - 1, starIndex + (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1)));
                     if (next != starIndex) {
                         starIndex = next;
                         aimMenu(false);
@@ -2902,16 +2984,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             showToast(Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."));
             return;
         }
+        if (menuIndex == M_HIDE) {
+            hidePick(p);
+            return;
+        }
         String key = Recs.key(p);
         click.open();
         if (!stars(p)) {
             watched.add(key);       // once: from now on OK rates
             markWatched(p);
         } else {
-            // A star once: that many stars; the same star again: half a star less (5, then 4.5, then 5…).
-            float star = starIndex + 1;
-            Float now = rated.get(key);
-            rated.put(key, now != null && now == star ? star - 0.5f : star);
+            rated.put(key, starIndex + 1);   // that many of ten: Trakt's scale as it is
             ratePick = p;
             handler.removeCallbacks(rateNow);
             handler.postDelayed(rateNow, RATE_AFTER_MS);
@@ -2956,22 +3039,22 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         });
     }
 
-    /** The stars chosen, to Trakt (1 to 10: a star is 2), once: never again while they're the ones already sent. */
+    /** The stars chosen, to Trakt (its 1 to 10), once: never again while they're the ones already sent. */
     private void sendRating() {
         handler.removeCallbacks(rateNow);
         Recs.Pick p = ratePick;
         ratePick = null;
         if (p == null) return;
         String key = Recs.key(p), kind = p.kind, title = p.title;
-        Float stars = rated.get(key);
+        Integer stars = rated.get(key);
         if (stars == null || stars.equals(ratedSent.get(key))) return;
         ratedSent.put(key, stars);
-        int id = p.id, value = Math.round(stars * 2);
+        int id = p.id, value = stars;
         String shown = starsText(stars);
         LOADER.execute(() -> {
             try {
                 Trakt.rate(kind, id, value);
-                handler.post(() -> showToast(Ui.trf("Rated {stars} of 5 on Trakt: {title}", "stars", shown, "title", title)));
+                handler.post(() -> showToast(Ui.trf("Rated {stars} of 10 on Trakt: {title}", "stars", shown, "title", title)));
             } catch (Exception e) {
                 AppLog.w("Trakt rating: " + e.getMessage());
                 handler.post(() -> {
@@ -2982,10 +3065,35 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         });
     }
 
-    private static String starsText(float stars) {
-        java.text.NumberFormat f = java.text.NumberFormat.getNumberInstance(Ui.locale());
-        f.setMaximumFractionDigits(1);
-        return f.format(stars);
+    private static String starsText(int stars) {
+        return java.text.NumberFormat.getIntegerInstance(Ui.locale()).format(stars);
+    }
+
+    /**
+     * "Don't recommend": out of Trakt's recommendations for good (its hidden list), and out of the row once the menu has
+     * faded; if Trakt refuses, it stays, with a toast. One request per title.
+     */
+    private void hidePick(Recs.Pick p) {
+        if (!hiding.add(Recs.key(p))) return;
+        click.open();
+        hideAfter = p;
+        closePickMenu(false);
+        String title = p.title, kind = p.kind;
+        int id = p.id;
+        LOADER.execute(() -> {
+            try {
+                Trakt.hideRecommendation(kind, id);
+                handler.post(() -> showToast(Ui.trf("Won't be recommended again: {title}", "title", title)));
+            } catch (Exception e) {
+                AppLog.w("Trakt hide: " + e.getMessage());
+                handler.post(() -> {
+                    hiding.remove(Recs.key(p));
+                    if (hideAfter == p) hideAfter = null;
+                    recs.unhide(p);
+                    showToast(Ui.tr("Trakt didn't answer. Try again in a moment."));
+                });
+            }
+        });
     }
 
     private boolean menuCardShown() {
@@ -3046,7 +3154,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 tone(0.04f, 0.06f), tone(30, 34) * k, tone(22, 28) * k, tone(0.65f, 0.95f), 1);
     }
 
-    /** The items, focused the tvOS way (a white pill); the second one, once watched, five stars. */
+    /** The items, focused the tvOS way (a white pill); the second one, once watched, ten stars. */
     private void drawMenuItems(Canvas c) {
         if (menuPick == null) return;
         float ih = MENU_ITEM_H * k, pad = MENU_PAD * k, gap = MENU_GAP * k;
@@ -3062,9 +3170,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 fill.setColor(Ui.alpha(0xFFFFFFFF, f));
                 c.drawRoundRect(cell, ih / 2, ih / 2, fill);
             }
-            int ink = i == M_WATCHED && !menuSignedIn ? tone(L_FAINT, 0xFF8E8E93) : blend(tone(L_INK, WHITE), L_INK, f);
+            int ink = i != M_TRAILER && !menuSignedIn ? tone(L_FAINT, 0xFF8E8E93) : blend(tone(L_INK, WHITE), L_INK, f);
             float cy = cell.centerY(), textX = cell.left + 84 * k;
-            Symbols.draw(getContext(), c, i == M_TRAILER ? "play" : "check", cell.left + 46 * k, cy, 30 * k, ink);
+            Symbols.draw(getContext(), c, i == M_TRAILER ? "play" : i == M_WATCHED ? "check" : "thumb_down", cell.left + 46 * k, cy, 30 * k, ink);
             if (i == M_WATCHED && stars(menuPick)) {
                 drawStars(c, textX, cy, ink);
             } else {
@@ -3074,33 +3182,28 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
-    /** Five stars from x: filled (or half) up to the rating, the focused one larger; the rating's number at the end. */
+    /** Ten stars from x: filled up to the rating, the focused one larger; the rating's number at the end. */
     private void drawStars(Canvas c, float x, float cy, int ink) {
-        Float value = rated.get(Recs.key(menuPick));
-        float stars = value == null ? 0 : value, size = 38 * k, step = 56 * k;
-        for (int j = 0; j < 5; j++) {
-            float g = Ui.clamp(starFocus[j].value), sz = size * (1 + 0.3f * g), have = Ui.clamp(stars - j);
+        Integer value = rated.get(Recs.key(menuPick));
+        int stars = value == null ? 0 : value;
+        float size = 30 * k, step = 40 * k;
+        for (int j = 0; j < starFocus.length; j++) {
+            float g = Ui.clamp(starFocus[j].value), sz = size * (1 + 0.3f * g);
+            boolean have = j < stars;
             c.save();
             c.translate(x + size / 2 + j * step, cy);
             c.scale(sz, sz);
-            if (have > 0) {
+            if (have) {
                 starPaint.setColor(0xFFFFCC00);
-                if (have < 1) {
-                    c.save();
-                    c.clipRect(-1, -1, 0, 1);   // the left half
-                    c.drawPath(star, starPaint);
-                    c.restore();
-                } else {
-                    c.drawPath(star, starPaint);
-                }
+                c.drawPath(star, starPaint);
             }
-            starLine.setColor(have >= 1 ? 0xFFFFCC00 : Ui.alpha(ink, 0.75f));
+            starLine.setColor(have ? 0xFFFFCC00 : Ui.alpha(ink, 0.75f));
             c.drawPath(star, starLine);
             c.restore();
         }
         if (stars > 0) {
             menuText.setColor(ink);
-            c.drawText(starsText(stars), x + 5 * step + 8 * k, cy + Ui.halfCap(menuText), menuText);
+            c.drawText(starsText(stars), x + starFocus.length * step + 8 * k, cy + Ui.halfCap(menuText), menuText);
         }
     }
 
@@ -3562,9 +3665,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         List<Recs.Pick> list = recs.now(kind);
         boolean grew = list.size() >= cards.size() && samePicks(cards, list.subList(0, cards.size()));
         boolean changed = !samePicks(list, cards);
+        int gone = changed ? goneAt(cards, list) : -1;
         if (changed) cards = list;
         int n = recs.loading(kind) ? Math.max(list.size(), recs.shown(kind)) : list.size();
-        boolean reset = rowReset || (changed && !grew);
+        boolean reset = rowReset || (changed && !grew && gone < 0);
+        // One card gone (hidden from its menu): the row stays, and the cards from its place on fade in where they are.
+        for (int i = Math.max(0, gone); gone >= 0 && i < imageAt.length; i++) imageAt[i] = 0;
         rowReset = false;
         if (n != slots || reset) setSlots(n, reset);
         long now = SystemClock.uptimeMillis();
@@ -3707,8 +3813,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             imagePaint.setColorFilter(null);
             return;
         }
-        long up = SystemClock.uptimeMillis();
-        float e = bgFadeAt == 0 ? 1 : fadeEase(bgFadeAt, up);
         boolean fading = bgFadeAt != 0;
         // Drawer open: the background lightens (by day) or darkens (at night), as a filter on the drawing itself.
         android.graphics.ColorFilter v = veil(tone(0.32f, 0.42f) * Ui.clamp(drawer.value), blend(0xFFFFFFFF, 0xFF000000, night));
@@ -3730,15 +3834,26 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             fill.setShader(null);
             fill.setColorFilter(null);
         }
-        imagePaint.setColorFilter(v);
+    }
+
+    /**
+     * The picks' backgrounds (blurred, Backdrop.GW × GH), in a layer of that size the GPU scales up to the screen: a
+     * crossfade then fills the screen once, not once per image (this TV's GPU spends ~11 ms on each full-screen fill).
+     */
+    private void drawSkyImages(Canvas c) {
+        if (photoBg() != null) return;
+        long up = SystemClock.uptimeMillis();
+        float e = bgFadeAt == 0 ? 1 : fadeEase(bgFadeAt, up, BG_FADE_MS);
+        boolean fading = bgFadeAt != 0;
+        imagePaint.setColorFilter(veil(tone(0.32f, 0.42f) * Ui.clamp(drawer.value), blend(0xFFFFFFFF, 0xFF000000, night)));
         if (fading && bgFrom != null) drawLightImage(c, bgFrom, bgTo == null ? 1 - e : 1);
         if (bgTo != null) drawLightImage(c, bgTo, fading ? e : 1);
         imagePaint.setColorFilter(null);
     }
 
     private void drawLightImage(Canvas c, Backdrop b, float alpha) {
-        if (night < 0.999f || b.nightImage == null) drawImage(c, b.lightImage, alpha);
-        if (night > 0.001f) drawImage(c, b.nightImage, alpha * night);
+        if (night < 0.999f || b.nightImage == null) drawImage(c, b.lightImage, alpha, skyRect);
+        if (night > 0.001f) drawImage(c, b.nightImage, alpha * night, skyRect);
     }
 
     private void drawLightTop(Canvas c) {
@@ -3777,9 +3892,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         // The row, from each card's width this frame (never under the tall one); x0 is each card's place without the
         // stretch. The card the focus goes to pushes the next one only by what would bring their edges (as drawn, the
-        // focused one 5% larger) closer than their gap once settled: so it moves with the stretch, not before, and the
-        // card after it stays. What is off screen isn't drawn, and the lifted card goes last.
-        float x0 = MARGIN * k - rowScroll.value + rowNudge.value, reach = 60 * k, delta = wideW - tallW, pushed = 0;
+        // focused one 5% larger) closer than their gap once settled: so it moves with the stretch, not before. The card
+        // after that moves half as far, so the two gaps between the tall cards narrow together, and the one after them
+        // stays. What is off screen isn't drawn, and the lifted card goes last.
+        float x0 = MARGIN * k - rowScroll.value + rowNudge.value - menuShift.value, reach = 60 * k, delta = wideW - tallW;
+        float pushed = 0, after = 0;
         int top = -1;
         for (int i = 0; i < slots; i++) {
             float v = cardFocus.get(i).value, wide = cardWide.get(i).value, over = delta * Math.max(0, wide - 1);
@@ -3787,11 +3904,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             float bw = tallW + delta * Math.max(0, wide), next = x0 + bw - over + cardGap;
             cardX[i] = x0 + pushed;
             cardW[i] = bw;
-            pushed = 0;
+            pushed = after;
+            after = 0;
             if (i + 1 < slots && cardFocus.get(i).target == 1) {
                 float nv = cardFocus.get(i + 1).value, nw = tallW + delta * Math.max(0, cardWide.get(i + 1).value);
                 float right = x0 + bw * (2 + 0.05f * v) / 2, left = next - nw * 0.05f * nv / 2;
                 pushed = Math.max(0, right + cardGap - restGrowth(i) - restGrowth(i + 1) - left);
+                after = pushed / 2;
             }
             x0 = next;
         }
@@ -3853,8 +3972,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * Recommendation card: the title's photo (its center at the card's width this frame, from one image big enough for
      * the wide card focused, so it stays sharp and a card that widens keeps the same picture), rounded corners and a
      * soft shadow; when focused, it grows 5%, rises and lights up its border, and while its width is stretched past its
-     * size it is a little thinner, like jelly. Below it, the title; as the card widens,
-     * the rating and genre · runtime fade in. An empty card (its title still being looked up) pulses softly.
+     * size it is a little thinner, like jelly. On it, the title's logo when TMDB has one (drawLogo); else, below it, the
+     * title. As the card widens, the rating and year · genre · runtime fade in below. An empty card (its title still being
+     * looked up) pulses softly.
      */
     private void drawLightCard(Canvas c, int i) {
         Recs.Pick p = i < cards.size() ? cards.get(i) : null;
@@ -3889,6 +4009,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             coverImage(c, b.card, b.cardShader, cell, r);
             imageFill.setAlpha(255);
         }
+        Bitmap logo = shown > 0 ? b.logo : null;
+        if (logo != null) drawLogo(c, logo, cx, cy, bw, ch, s, wide, shown);
         if (f > 0.01f) {
             int alpha = Math.round(255 * f);
             c.save();
@@ -3909,11 +4031,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         CardText t = p == null ? null : cardWords[i];
         if (t == null) return;
-        // The title: cut for its width at rest; while the card changes width, the wide one, clipped to the card.
+        // The title, unless the logo says it (the details then take its line): cut for its width at rest; while the card
+        // changes width, the wide one, clipped to the card.
         float base = top + bh + 46 * k;
-        if (wide > 0.999f || wide < 0.001f) {
+        if (logo == null && (wide > 0.999f || wide < 0.001f)) {
             c.drawText(wide > 0.5f ? t.wideTitle : t.tallTitle, left, base, lCardTitle);
-        } else {
+        } else if (logo == null) {
             c.save();
             c.clipRect(left, base - lCardTitle.getTextSize() * 1.2f, left + bw, base + lCardTitle.getTextSize() * 0.4f);
             c.drawText(t.wideTitle, left, base, lCardTitle);
@@ -3921,7 +4044,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         float details = smoothstep(0.55f, 1, wide);
         if (details < 0.01f || (t.meta.isEmpty() && t.rating.isEmpty())) return;
-        float metaBase = top + bh + 80 * k, x = left;
+        float metaBase = logo != null ? base : top + bh + 80 * k, x = left;
         int metaColor = lCardMeta.getColor();
         lCardMeta.setColor(Ui.alpha(metaColor, details));
         if (!t.rating.isEmpty()) {
@@ -3938,6 +4061,26 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         if (!t.meta.isEmpty()) c.drawText(t.meta, x, metaBase, lCardMeta);
         lCardMeta.setColor(metaColor);
+    }
+
+    /**
+     * The title's logo on its card (whose photo darkens toward the bottom: Backdrop.card): on a tall card centered near
+     * its bottom (82% of its width × 20% of its height at most), on the wide one at its bottom left (42% × 24%), moving
+     * and growing between the two as the card widens. Drawn in the card's own transform, so it follows the focus's growth
+     * and the jelly; the bitmap is the wide size's (Backdrop.logo), mipmapped for the tall cards.
+     */
+    private void drawLogo(Canvas c, Bitmap logo, float cx, float cy, float bw, float ch, float s, float wide, float alpha) {
+        c.save();
+        c.translate(cx, cy);
+        c.scale(s, s);
+        float boxW = tallW * 0.82f + (wideW * 0.42f - tallW * 0.82f) * wide, boxH = L_CARD_H * k * (0.2f + 0.04f * wide);
+        float fit = Math.min(boxW / logo.getWidth(), boxH / logo.getHeight());
+        float lw = logo.getWidth() * fit, lh = logo.getHeight() * fit, pad = (26 + 8 * wide) * k;
+        float lx = -lw / 2 + (-bw / 2 + pad + lw / 2) * wide;   // centered, then at the left as the card widens
+        logoRect.set(lx, ch / 2 - pad - lh, lx + lw, ch / 2 - pad);
+        logoPaint.setAlpha(Math.round(255 * alpha));
+        c.drawBitmap(logo, null, logoRect, logoPaint);
+        c.restore();
     }
 
     /**

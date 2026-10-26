@@ -46,7 +46,7 @@ final class Recs {
     static final class Pick {
         int id;
         String kind;            // "movie" or "tv"
-        String title, backdrop, meta = "", app, pkg;
+        String title, backdrop, logo, meta = "", app, pkg;   // logo: TMDB's path of the title's logo (a PNG)
         String link;            // Watchmode URL or Filmix search-suggestion payload; null opens the app's home
         String originalTitle;
         int year;
@@ -63,11 +63,13 @@ final class Recs {
     private static final String API = "https://api.themoviedb.org/3";
     /** The backdrops: on a 720p UI, TMDB's 1280-wide copy shows the same and is lighter to download and decode. */
     private static final String IMAGES = "https://image.tmdb.org/t/p/" + (Backdrop.W <= 1280 ? "w1280" : "original");
+    /** Title logos: 500 wide is more than the wide card shows. */
+    private static final String LOGOS = "https://image.tmdb.org/t/p/w500";
     /** TMDB's Animation genre (movies and shows: cartoons and anime), left out with hide_animation=true. */
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 11;
+    private static final int CACHE_VERSION = 13;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
@@ -156,10 +158,19 @@ final class Recs {
     private volatile boolean light;     // light design: builds only the cards (all three tabs' cards fit in memory)
     private volatile long failedAt, keyStamp, linkRetryAt;
     private volatile String listLanguage = "";   // language used for the saved titles, genres and texts
+    /**
+     * Titles hidden from the rows (their menu's "Don't recommend"), by key: Trakt leaves them out of its recommendations
+     * from then on, and these keep a saved list or another source from bringing them back. Kept apart from the cache,
+     * which a new CACHE_VERSION clears.
+     */
+    private final Set<String> hidden = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final SharedPreferences hiddenPrefs;
 
     private Recs(Context c) {
         context = c;
         cache = c.getSharedPreferences("recs", Context.MODE_PRIVATE);
+        hiddenPrefs = c.getSharedPreferences("recs-hidden", Context.MODE_PRIVATE);
+        hidden.addAll(hiddenPrefs.getStringSet("keys", new HashSet<>()));
         if (cache.getInt("version", 0) != CACHE_VERSION
                 || !Config.RECOMMENDATIONS_APP.equals(cache.getString("recommendationsApp", ""))) {
             cache.edit().clear().putInt("version", CACHE_VERSION)
@@ -243,7 +254,7 @@ final class Recs {
     }
 
     private boolean visible(Pick p, String kind, Map<String, Boolean> have) {
-        return (!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(p.kind))
+        return (!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(p.kind)) && !hidden.contains(key(p))
                 && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)));   // app missing: skip
     }
 
@@ -262,6 +273,34 @@ final class Recs {
         if (count(kind) < shown[r]) lookUp(kind);
         notifyListeners();
         return true;
+    }
+
+    /**
+     * Main thread: the title leaves every row now and for good (its menu's "Don't recommend"); a row left short takes
+     * its next title. False if it was already hidden.
+     */
+    boolean hide(Pick p) {
+        if (!hidden.add(key(p))) return false;
+        saveHidden();
+        synchronized (queue) {
+            for (int i = queue.size() - 1; i >= 0; i--) if (key(queue.get(i)).equals(key(p))) queue.remove(i);
+        }
+        for (String kind : new String[] {null, "movie", "tv"}) {
+            if (count(kind) < shown[row(kind)] && queued(kind)) lookUp(kind);
+        }
+        notifyListeners();
+        return true;
+    }
+
+    /** Main thread: back in its place (Trakt refused to hide it). */
+    void unhide(Pick p) {
+        if (!hidden.remove(key(p))) return;
+        saveHidden();
+        notifyListeners();
+    }
+
+    private void saveHidden() {
+        hiddenPrefs.edit().putStringSet("keys", new HashSet<>(hidden)).apply();
     }
 
     /** The row has more to show: cards already confirmed, or titles still waiting in the queue. */
@@ -847,6 +886,7 @@ final class Recs {
         p.rating = o.optInt("vote_count") >= 20 ? (float) o.optDouble("vote_average", 0) : 0;
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
+        p.logo = bestLogo(o.optJSONObject("images"));
         List<String> parts = new ArrayList<>();
         JSONArray genres = o.optJSONArray("genres");
         if (p.kind.equals("movie") && p.year > 0) parts.add(String.valueOf(p.year));
@@ -863,7 +903,7 @@ final class Recs {
             if (seasons > 0) parts.add(Ui.plural("plural|one:{n} season|other:{n} seasons", seasons));
             JSONObject last = o.optJSONObject("last_episode_to_air");
             long aired = dayAt(last != null ? last.optString("air_date") : o.optString("last_air_date"));
-            if (aired > 0) parts.add(Ui.trf("last episode {date}", "date", Ui.datePattern("format|MMM d, yyyy").format(aired)));
+            if (aired > 0) parts.add(Ui.datePattern("format|MMM d, yyyy").format(aired));   // the last episode's day
         }
         JSONObject wp = o.optJSONObject("watch/providers");
         JSONObject br = wp == null ? null : wp.optJSONObject("results") == null ? null : wp.optJSONObject("results").optJSONObject(REGION);
@@ -933,6 +973,31 @@ final class Recs {
             }
         }
         return best;
+    }
+
+    /**
+     * The title's logo for its card: in the TV's language, else in English, else one in no language; of those, the best
+     * rated. An SVG one by its PNG copy (TMDB serves both).
+     */
+    private static String bestLogo(JSONObject images) {
+        JSONArray list = images == null ? null : images.optJSONArray("logos");
+        if (list == null) return null;
+        for (String want : new String[] {Ui.language.replaceAll("-.*", ""), "en", null}) {
+            String best = null;
+            double bestScore = -1;
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject l = list.optJSONObject(i);
+                String path = l == null ? "" : l.optString("file_path", "");
+                if (path.isEmpty() || !java.util.Objects.equals(l.isNull("iso_639_1") ? null : l.optString("iso_639_1"), want)) continue;
+                double score = l.optDouble("vote_average", 0);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = path;
+                }
+            }
+            if (best != null) return best.endsWith(".svg") ? best.substring(0, best.length() - 4) + ".png" : best;
+        }
+        return null;
     }
 
     /** The SERVICES row for a TMDB name: the installed one first, when a service has more than one package. */
@@ -1076,12 +1141,16 @@ final class Recs {
 
     private void download(Pick p) throws IOException {
         if (p.backdrop == null) return;   // TMDB has no image for it: the card shows without one
-        File f = imageFile(p);
+        fetch(IMAGES + p.backdrop, imageFile(p), 24);
+    }
+
+    /** Saves `url` as `f` unless it's there already; its folder keeps its newest `keep` files. */
+    private static void fetch(String url, File f, int keep) throws IOException {
         if (f.exists()) return;
         //noinspection ResultOfMethodCallIgnored
         f.getParentFile().mkdirs();
         File part = new File(f.getPath() + ".part");
-        HttpURLConnection c = (HttpURLConnection) new URL(IMAGES + p.backdrop).openConnection();
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(8000);
         c.setReadTimeout(20000);
         try (InputStream in = c.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
@@ -1096,7 +1165,7 @@ final class Recs {
             c.disconnect();
         }
         if (!part.renameTo(f)) throw new IOException("couldn't save the image");
-        prune(f.getParentFile());
+        prune(f.getParentFile(), keep);
     }
 
     /** Reads the photo (≥ the UI's width) and builds the backdrop (Backdrop: cards plus frosted and glass versions). */
@@ -1117,7 +1186,9 @@ final class Recs {
             if (b == null) throw new IOException("unreadable image");
             AppLog.w("backdrop \u201c" + p.title + "\u201d: " + bounds.outWidth + "×" + bounds.outHeight + " → " + Backdrop.W + "×" + Backdrop.H);
             boolean forLight = light;
-            Backdrop backdrop = Backdrop.make(b, forLight);
+            Bitmap logo = forLight ? loadLogo(p) : null;   // only the cards show it
+            Backdrop backdrop = Backdrop.make(b, forLight, false, logo != null);
+            backdrop.logo = logo;
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
@@ -1132,6 +1203,23 @@ final class Recs {
         }
     }
 
+    /** The title's logo, ready for its card (Backdrop.logo); null without one, or if it can't be had now. */
+    private Bitmap loadLogo(Pick p) {
+        if (p.logo == null) return null;
+        File f = new File(new File(context.getCacheDir(), "recs-logos"), p.logo.replace("/", ""));
+        try {
+            fetch(LOGOS + p.logo, f, 60);
+            Bitmap b = BitmapFactory.decodeFile(f.getPath());
+            if (b == null) throw new IOException("unreadable logo");
+            return Backdrop.logo(b);
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            AppLog.w("logo \u201c" + p.title + "\u201d: " + e.getMessage());
+            return null;
+        }
+    }
+
     void trim() {
         // Explore's picks stay: the home screen opens on that tab, so its cards are never gray when you come back.
         java.util.Set<String> keep = new java.util.HashSet<>();
@@ -1141,7 +1229,7 @@ final class Recs {
         }
     }
 
-    private static void prune(File dir) {
+    private static void prune(File dir, int keep) {
         // A download cut off when the system stopped the app leaves its .part behind.
         long stale = System.currentTimeMillis() - 10 * 60_000L;
         File[] parts = dir.listFiles((d, name) -> name.endsWith(".part"));
@@ -1150,9 +1238,9 @@ final class Recs {
             if (parts[i].lastModified() < stale) parts[i].delete();
         }
         File[] files = dir.listFiles((d, name) -> !name.endsWith(".part"));
-        if (files == null || files.length <= 24) return;
+        if (files == null || files.length <= keep) return;
         Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-        for (int i = 0; i < files.length - 24; i++) {
+        for (int i = 0; i < files.length - keep; i++) {
             //noinspection ResultOfMethodCallIgnored
             files[i].delete();
         }
@@ -1185,6 +1273,7 @@ final class Recs {
         return new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title)
                 .put("original", p.originalTitle == null ? "" : p.originalTitle).put("year", p.year)
                 .put("rating", (double) p.rating).put("backdrop", p.backdrop == null ? "" : p.backdrop)
+                .put("logo", p.logo == null ? "" : p.logo)
                 .put("link", p.link == null ? "" : p.link).put("meta", p.meta)
                 .put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg).put("detailed", p.detailed);
     }
@@ -1202,6 +1291,7 @@ final class Recs {
             p.year = o.optInt("year");
             p.rating = (float) o.optDouble("rating", 0);
             p.backdrop = o.optString("backdrop").isEmpty() ? null : o.optString("backdrop");
+            p.logo = o.optString("logo").isEmpty() ? null : o.optString("logo");
             p.link = o.optString("link").isEmpty() ? null : o.optString("link");
             p.meta = o.optString("meta");
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
