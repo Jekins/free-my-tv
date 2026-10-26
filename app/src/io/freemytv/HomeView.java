@@ -4257,9 +4257,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawText(tabs()[i], r.centerX() - tw / 2, r.centerY() + Ui.halfCap(p), p);
             p.setColor(ink);
             if (TAB_KIND[i] == null && !recs.filter(null).none()) {
-                // Filtered: a dot at the name's top right, in Apple's blue.
+                // Filtered: a dot at the name's top right, in the accent.
                 fill.setShader(null);
-                fill.setColor(Ui.alpha(0xFF0A84FF, shown));
+                fill.setColor(Ui.alpha(tone(Ui.ACCENT_DEEP, Ui.ACCENT), shown));
                 c.drawCircle(r.centerX() + tw / 2 + 9 * k, r.centerY() - Ui.halfCap(p) - 2 * k, 5 * k, fill);
             }
         }
@@ -4462,7 +4462,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         fill.setShader(null);
         fill.setColor(Ui.alpha(0xF2FFFFFF, alpha));
         c.drawRoundRect(tmp, h / 2, h / 2, fill);
-        fill.setColor(Ui.alpha(0xFF0A84FF, alpha));
+        fill.setColor(Ui.alpha(Ui.ACCENT, alpha));
         c.drawCircle(left + pad + dot, top + h / 2, dot, fill);
         lBadge.setColor(Ui.alpha(L_INK, alpha));
         c.save();
@@ -4871,7 +4871,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         if (searchOpen && zone == Z_SEARCH && !onMic && caretOn) {
             float cxr = x + queryLineW + 2 * k, half = 19 * k;
-            fill.setColor(Ui.alpha(0xFF0A84FF, text));
+            fill.setColor(Ui.alpha(tone(Ui.ACCENT_DEEP, Ui.ACCENT), text));
             c.drawRoundRect(cxr, cy - half, cxr + 3 * k, cy + half, 1.5f * k, 1.5f * k, fill);
         }
         if (voice != null) {

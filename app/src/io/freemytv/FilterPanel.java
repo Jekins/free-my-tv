@@ -44,8 +44,8 @@ final class FilterPanel {
     private static final int OFF = 0, ON = 1, OUT = 2, WITHIN = 3;
     /** The statuses in the order they're offered: out, on the air, over, then still to come. */
     private static final int[] STATUS_ORDER = {0, 1, 2, 10, 9, 3, 4, 5, 6, 7, 8};
-    private static final int BLUE = 0xFF0A84FF, RED = 0xFFFF453A, INK = 0xFF1D1D1F, WHITE = 0xFFF5F5F7;
-    private static final int FIRST_YEAR = 1900;
+    private static final int RED = 0xFFFF453A, INK = 0xFF1D1D1F, WHITE = 0xFFF5F5F7;
+    private static final int FIRST_YEAR = 1930;   // as far back as Trakt's own slider goes
     // Sizes at 1920 wide (× k).
     private static final float PANEL_W = 1560, PANEL_H = 880, PAD = 36, HEAD = 84, SIDE_W = 470, SIDE_H = 70,
             SIDE_GAP = 4, SIDE_SPACE = 24, PANE_GAP = 44, LABEL_H = 48, CHIP_H = 58, CHIP_GAP = 12, LINE_GAP = 12,
@@ -101,6 +101,7 @@ final class FilterPanel {
     private int[] lineFirst = new int[0];     // each line's first capsule
     private float contentH;
     private int shown = -1;                   // the section in the pane
+    private int yearsOf;                      // the decade whose years the Years section shows
     private int side, focus;                  // the focused section (or Reset, Show); the focused capsule
     private boolean inPane, okDown, backDown;
     private float wantX;                      // ↑ ↓ keep to this x (the capsule's center the focus came from)
@@ -141,6 +142,7 @@ final class FilterPanel {
     /** Opens on `current` (a copy is edited); `types`: All, Movies, Shows as the tabs say them; `tab`: Explore's name. */
     void open(Recs.Filter current, String[] types, String tab) {
         draft = current.copy();
+        yearsOf = draft.yearFrom > 0 ? draft.yearFrom / 10 * 10 : thisDecade();
         typeNames = types;
         heading = Ui.trf("Filters: {tab}", "tab", tab);
         side = 0;
@@ -256,9 +258,19 @@ final class FilterPanel {
                     next = i;
                 }
             }
+            if (dy < 0 && c.kind == K_YEAR && chips.get(next).kind != K_YEAR) {
+                for (int i = 0; i < chips.size(); i++) {   // up from the years: to their decade
+                    if (chips.get(i).kind == K_DECADE && chips.get(i).value == yearsOf) next = i;
+                }
+            }
         }
         if (next == focus) return;
         focus = next;
+        Chip to = chips.get(focus);
+        if (to.kind == K_DECADE && to.value != yearsOf) {
+            yearsOf = to.value;      // the decade under the focus shows its years below it (the focus keeps its place)
+            build(S_YEARS, false);
+        }
         aimFocus(false);
         host.moved();
         host.announce(chipLabel(chips.get(focus)));
@@ -275,6 +287,7 @@ final class FilterPanel {
                 enterPane();
             } else if (side == RESET) {
                 draft = new Recs.Filter();
+                yearsOf = thisDecade();
                 host.picked();
                 summarize();
                 build(shown);
@@ -371,7 +384,9 @@ final class FilterPanel {
             case K_GENRE_ANY: return d.genres == 0 && d.without == 0 ? ON : OFF;
             case K_GENRE: return (d.genres & 1L << c.value) != 0 ? ON : (d.without & 1L << c.value) != 0 ? OUT : OFF;
             case K_YEAR_ANY: return d.yearFrom == 0 ? ON : OFF;
-            case K_DECADE: return d.yearFrom == c.value && d.yearTo == c.value + 9 ? ON : OFF;
+            case K_DECADE:
+                if (d.yearFrom == c.value && d.yearTo == c.value + 9) return ON;
+                return d.yearFrom > 0 && d.yearFrom <= c.value + 9 && d.yearTo >= c.value ? WITHIN : OFF;   // years in it
             case K_YEAR:
                 if (d.yearFrom == 0) return OFF;
                 if (c.value == d.yearFrom || c.value == d.yearTo) return ON;
@@ -466,8 +481,15 @@ final class FilterPanel {
     private final List<Integer> firsts = new ArrayList<>();
     private boolean groupStart;
 
-    /** The options of `section`, laid out in lines (wrapping at the pane's width). */
     private void build(int section) {
+        build(section, true);
+    }
+
+    /**
+     * The options of `section`, laid out in lines (wrapping at the pane's width). With the focus on them, it stays on
+     * the same one, moving there at once (`snap`) or gliding.
+     */
+    private void build(int section, boolean snap) {
         if (section < 0) return;
         shown = section;
         chips.clear();
@@ -498,11 +520,15 @@ final class FilterPanel {
                 for (int i : order) chip(K_GENRE, 0, i, genreName(Recs.Filter.GENRES[i]), true);
                 break;
             case S_YEARS:
+                // The decades, then the years of one of them (the one the focus is on, or was last), as tvOS would
+                // have it: a few roomy capsules at a time rather than a century of narrow ones.
                 group(null);
                 chip(K_YEAR_ANY, 0, 0, Ui.tr("filter|Any year"), false);
-                group(null);
-                int last = (Calendar.getInstance().get(Calendar.YEAR) + 1) / 10 * 10;
-                for (int decade = last; decade >= FIRST_YEAR; decade -= 10) yearRow(decade);
+                for (int decade = thisDecade(); decade >= FIRST_YEAR; decade -= 10) {
+                    chip(K_DECADE, 0, decade, Ui.trf("filter|{year}s", "year", String.valueOf(decade)), false);
+                }
+                group(Ui.trf("filter|{year}s", "year", String.valueOf(yearsOf)));
+                years(yearsOf);
                 break;
             case S_STATUS:
                 group(null);
@@ -513,7 +539,7 @@ final class FilterPanel {
             case S_RATINGS:
                 for (int r = 0; r < Recs.Filter.RATINGS.length; r++) {
                     group(ratingSource(r, false));
-                    chip(K_RATING, r, 0, Ui.tr("filter|Any rating"), false);
+                    chip(K_RATING, r, 0, Ui.tr("filter|All"), false);   // short, as Trakt says it: the line has six
                     for (int i = 1; i <= Recs.Filter.RATING_MIN[r].length; i++) chip(K_RATING, r, i, ratingMin(r, i), false);
                 }
                 break;
@@ -539,8 +565,12 @@ final class FilterPanel {
             focus = 0;
         } else {
             focus = Math.min(focus, chips.size() - 1);
-            aimFocus(true);
+            aimFocus(snap);
         }
+    }
+
+    private static int thisDecade() {
+        return Calendar.getInstance().get(Calendar.YEAR) / 10 * 10;
     }
 
     /** A new group of options under `name` (none: no name), on a line of its own. */
@@ -579,25 +609,20 @@ final class FilterPanel {
         lines = tops.size();
     }
 
-    /** A decade: its name, then its ten years, in cells that fill the line. */
-    private void yearRow(int decade) {
-        if (!groupStart) newLine();
-        String name = Ui.trf("filter|{year}s", "year", String.valueOf(decade));
-        float dw = Math.max(chipText.measureText(name) + 2 * CHIP_PAD * k, 120 * k);
-        float cell = (pane.width() - dw - 10 * CHIP_GAP * k) / 10;
-        chip(K_DECADE, 0, decade, name, false);
-        chips.get(chips.size() - 1).w = dw;
-        cx = dw + CHIP_GAP * k;
-        for (int y = decade; y < decade + 10; y++) {
-            String text = String.valueOf(y);
-            Chip c = new Chip(K_YEAR, 0, y, text, chipText.measureText(text), false);
-            c.x = cx;
+    /** A decade's ten years: two lines of five, in cells that fill them. */
+    private void years(int decade) {
+        float cell = (pane.width() - 4 * CHIP_GAP * k) / 5;
+        for (int i = 0; i < 10; i++) {
+            if (i == 5) newLine();
+            String text = String.valueOf(decade + i);
+            Chip c = new Chip(K_YEAR, 0, decade + i, text, chipText.measureText(text), false);
+            c.x = (i % 5) * (cell + CHIP_GAP * k);
             c.y = cy;
             c.w = cell;
             c.line = lines - 1;
             chips.add(c);
-            cx += cell + CHIP_GAP * k;
         }
+        groupStart = false;
     }
 
     // MARK: - Words
@@ -803,7 +828,7 @@ final class FilterPanel {
             float f = 1 - Math.min(1, Math.abs(sideY.value - top) / (ih + SIDE_GAP * k));   // under the focus
             float on = f * (1 - p);
             int color = blend(ink, INK, on);
-            if (i == SHOW) color = BLUE;
+            if (i == SHOW) color = blend(blend(Ui.ACCENT_DEEP, Ui.ACCENT, dark), Ui.ACCENT_DEEP, on);
             if (i == RESET && draft.none()) color = Ui.alpha(color, 0.45f);
             item.setColor(color);
             c.drawText(sideName(i), left + 26 * k, cyy + Ui.halfCap(item), item);
@@ -825,14 +850,15 @@ final class FilterPanel {
             Label l = labels.get(i);
             if (l.y > viewTop && l.y < viewBottom + LABEL_H * k) c.drawText(l.text, 4 * k, l.y, labelPaint);
         }
-        // Fills: picked blue, left out red, the years between faintly blue; the rest glass, with a bright rim.
+        // Fills: picked in the accent, left out red, the years between faintly in the accent; the rest glass, with a bright
+        // rim.
         stroke.setStrokeWidth(1.5f * k);
         for (int i = 0; i < chips.size(); i++) {
             Chip chip = chips.get(i);
             if (chip.y < viewTop || chip.y > viewBottom) continue;
             tmp.set(chip.x, chip.y, chip.x + chip.w, chip.y + ch);
             int st = state(chip);
-            fill.setColor(st == ON ? BLUE : st == OUT ? Ui.alpha(RED, 0.92f) : st == WITHIN ? Ui.alpha(BLUE, 0.3f) : glassChip);
+            fill.setColor(st == ON ? Ui.ACCENT : st == OUT ? Ui.alpha(RED, 0.92f) : st == WITHIN ? Ui.alpha(Ui.ACCENT, 0.3f) : glassChip);
             c.drawRoundRect(tmp, r, r, fill);
             if (st == OFF) {
                 stroke.setColor(rim);
@@ -864,12 +890,13 @@ final class FilterPanel {
             Chip chip = chips.get(i);
             if (chip.y < viewTop || chip.y > viewBottom) continue;
             int st = state(chip);
-            // Under the focus (as much of it as the capsule covers): dark text, or blue or red for a picked one.
+            // Dark on the yellow, white on the red. Under the focus (as much of it as the capsule covers): dark text, or the
+            // accent's deep yellow for a picked one, red for one left out.
             float ox = Math.max(0, Math.min(chip.x + chip.w, pl + pw) - Math.max(chip.x, pl));
             float oy = Math.max(0, Math.min(chip.y + ch, pt + ph) - Math.max(chip.y, pt));
             float f = p * Math.min(1, ox * oy / (chip.w * ch));
-            int rest = st == ON || st == OUT ? 0xFFFFFFFF : ink;
-            int focused = st == ON ? BLUE : st == OUT ? RED : INK;
+            int rest = st == ON ? INK : st == OUT ? 0xFFFFFFFF : ink;
+            int focused = st == ON ? Ui.ACCENT_DEEP : st == OUT ? RED : INK;
             int color = blend(rest, focused, f);
             boolean glyph = chip.multi && (st == ON || st == OUT);
             float gw = glyph ? GLYPH * k : 0, x = chip.x + (chip.w - chip.textW - gw) / 2, mid = chip.y + ch / 2;
