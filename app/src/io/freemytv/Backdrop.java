@@ -30,7 +30,7 @@ final class Backdrop {
     /** The card image: 16:9, as wide as the wide card at its focused size (1.05×), so it covers any card sharp. */
     static final int CARD_W = ui(1092), CARD_H = ui(614);
     /** A title logo's box on the wide card at its focused size (42% of its width, 24% of its height, then 1.05×). */
-    static final int LOGO_W = ui(460), LOGO_H = ui(112);
+    static final int LOGO_W = ui(460), LOGO_H = ui(127);
 
     private static float uiScale() {
         android.util.DisplayMetrics m = android.content.res.Resources.getSystem().getDisplayMetrics();

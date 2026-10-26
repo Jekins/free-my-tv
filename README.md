@@ -180,16 +180,23 @@ building with `python3 tools/trakt_login.py`, which saves the tokens in `config.
 by itself each week; the TMDB key is still needed for the pictures. If Trakt can't be reached, the picks come from
 `trakt_user`'s public lists (Couchmoney's), then from TMDB.
 
-Each row (Explore, Movies, Shows) starts with three cards; → past the last one brings three more. With Filmix, a title
-is looked up only when its row gets to it, so a refresh asks Filmix about a handful of titles, not all of them. A card
-shows TMDB's rating and, for a movie, its year; for a show, the day its last episode aired. Where TMDB has the title's
-logo (in the TV's language, else in English), it is on the card's photo instead of the title below it, as on Apple TV:
-centered on a tall card, at the bottom left of the wide one.
+Each row (Explore, Movies, Shows) starts with four cards, the fourth's edge showing past the others; reaching the last
+one brings three more. With Filmix, a title is looked up only when its row gets to it, so a refresh asks Filmix about a
+handful of titles, not all of them. A card shows the title's rating (Trakt's for Trakt's picks, else TMDB's), then a
+movie's year or the day a show's last episode aired. Where TMDB has the title's logo (in the TV's language, else in
+English), it is on the card's photo instead of the title below it, as on Apple TV: centered on a tall card, at the
+bottom left of the wide one.
 
 Holding OK on a card opens its menu, with the card moved to the row's left end and the menu beside it: *Watch trailer*
 searches YouTube for the title's trailer in the TV's language; *Watched* adds it to your Trakt history, and the item then
-turns into ten stars to rate it (Trakt's own 1 to 10), sent once, a moment after the last press; *Don't recommend* takes
-it off the row and off your Trakt recommendations (Trakt's hidden list, which trakt.tv can undo).
+turns into ten stars to rate it (Trakt's own 1 to 10, with Trakt's word for each: 8 is *Great*), sent once, a moment
+after the last press; *Don't recommend* takes it off the row and off your Trakt recommendations (Trakt's hidden list,
+which trakt.tv can undo).
+
+Holding OK on the Movies or Shows tab opens its filters: year (by decade), rating (6, 7 or 8 and up, Trakt's), genre and,
+for shows, status (on the air, coming, ended, canceled), each *All* at first. ← → change a filter; OK or Back applies
+them. Trakt filters its recommendations itself, so a filter reaches past the unfiltered list's end; a filtered tab has a
+blue dot. Explore stays unfiltered.
 
 ### Opening a title, not just its app (optional)
 

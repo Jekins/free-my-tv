@@ -14,7 +14,8 @@ import java.util.HashMap;
  * time the shape changes size (every frame of a focus animation): on a Mali-450 (Mi Box 3, Android 9) that alone took
  * ~40 ms a frame. Here each (corner radius, blur) is blurred once into a small alpha bitmap and drawn as a nine-slice
  * (corners as they are, edges and center stretched), tinted with the paint's color.
- * Android 12+ keeps drawing the real BlurMaskFilter.
+ * Android 12+ keeps drawing the real BlurMaskFilter, except where `hollow` asks for the slices: under an opaque card the
+ * middle slice is covered anyway, and leaving it out (with the GPU's per-pixel blur gone too) is cheaper by far.
  */
 final class Shadows {
     private final HashMap<Long, Bitmap> cache = new HashMap<>();
@@ -27,7 +28,15 @@ final class Shadows {
 
     /** Draws `shape` (radius `r`) with `paint`, whose BlurMaskFilter was made with radius `blur`. */
     void draw(Canvas c, RectF shape, float r, float blur, Paint paint) {
-        if (!Ui.LEGACY) {
+        draw(c, shape, r, blur, paint, false);
+    }
+
+    /**
+     * The same; `hollow`: from the slices on every Android, without the middle one (for a shadow whose middle something
+     * opaque covers: a card's photo).
+     */
+    void draw(Canvas c, RectF shape, float r, float blur, Paint paint, boolean hollow) {
+        if (!Ui.LEGACY && !hollow) {
             c.drawRoundRect(shape, r, r, paint);
             return;
         }
@@ -42,7 +51,7 @@ final class Shadows {
         for (int i = 0; i < 3; i++) {
             if (sy[i + 1] == sy[i]) continue;
             for (int j = 0; j < 3; j++) {
-                if (sx[j + 1] == sx[j]) continue;
+                if (sx[j + 1] == sx[j] || (hollow && i == 1 && j == 1 && sy[1] != sy[0] && sx[1] != sx[0])) continue;
                 src.set(sx[j], sy[i], sx[j + 1], sy[i + 1]);
                 dst.set(xs[j], ys[i], xs[j + 1], ys[i + 1]);
                 c.drawBitmap(mask, src, dst, tint);

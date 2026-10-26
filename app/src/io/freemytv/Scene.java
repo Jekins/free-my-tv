@@ -24,11 +24,12 @@ import android.graphics.Shader;
  */
 final class Scene {
     final Shaders.Palette palette = new Shaders.Palette();
-    private RuntimeShader aurora, glass, liquid;
+    private RuntimeShader aurora, glass, liquid, clear;
     private final Frost frost = new Frost();
     private final Paint auroraPaint = new Paint();
     private final Paint glassPaint = new Paint();
     private final Paint liquidPaint = new Paint();
+    private final Paint clearPaint = new Paint();
     private final Paint flatFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint flatRim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fallback = new Paint();
@@ -65,14 +66,17 @@ final class Scene {
             aurora = new RuntimeShader(Shaders.AURORA);
             glass = new RuntimeShader(Shaders.GLASS);
             liquid = new RuntimeShader(Shaders.LIQUID);
+            clear = new RuntimeShader(Shaders.CLEAR);
             auroraPaint.setShader(aurora);
             glassPaint.setShader(glass);
             liquidPaint.setShader(liquid);
+            clearPaint.setShader(clear);
         } catch (RuntimeException | LinkageError e) {   // Android 8 to 12: no AGSL, flat look instead
             AppLog.w("shader unavailable, using gradient: " + e.getMessage());
             aurora = null;
             glass = null;
             liquid = null;
+            clear = null;
         }
         auroraNode.setUseCompositingLayer(true, layerPaint);
         flatRim.setStyle(Paint.Style.STROKE);
@@ -258,6 +262,27 @@ final class Scene {
         liquidPaint.setAlpha(255);
     }
 
+    /**
+     * The same glass, clear (Shaders.CLEAR): the layers under it show through as they are, so it needs no redraw when
+     * the background changes. Without AGSL: the tint, the rim and the sheen along the top.
+     */
+    void clear(Canvas c, RectF r, float radius, int tint, float tintAlpha, float lift, float specular, float alpha) {
+        if (alpha <= 0.004f) return;
+        if (clear == null) {
+            bitmapGlass(c, r, radius, null, 0, 0, null, 0, tint, Math.max(0.35f, tintAlpha), lift, 1, specular, alpha);
+            return;
+        }
+        clear.setFloatUniform("center", r.centerX(), r.centerY());
+        clear.setFloatUniform("halfSize", r.width() / 2, r.height() / 2);
+        clear.setFloatUniform("radius", Math.min(radius, Math.min(r.width(), r.height()) / 2));
+        clear.setFloatUniform("tint", Color.red(tint) / 255f, Color.green(tint) / 255f, Color.blue(tint) / 255f, tintAlpha);
+        clear.setFloatUniform("lift", lift);
+        clear.setFloatUniform("specular", specular);
+        clearPaint.setAlpha(Math.round(255 * Math.min(1, alpha)));
+        c.drawRect(r.left - 1, r.top - 1, r.right + 1, r.bottom + 1, clearPaint);
+        clearPaint.setAlpha(255);
+    }
+
     /** The glass now reads the blurred background image (Backdrop.FW × FH, ARGB). */
     void setFrost(int[] pixels) {
         imageFrost = true;
@@ -369,7 +394,8 @@ final class Scene {
     }
 
     /**
-     * The glass without shaders: the soft copy `a` (`aw` × `ah`; blended with `b` by `mix` during a photo change)
+     * The glass without shaders: the soft copy `a` (`aw` × `ah`; blended with `b` by `mix` during a photo change; none
+     * for clear glass)
      * stretched to the screen and drawn through the rounded rectangle, minus the layer's offset, so the glass shows
      * what is really behind it; then the same tint as the flat fill, a faint lift, the rim and a sheen on the top
      * edge. The paints and matrices are reused: nothing is allocated here.
@@ -378,7 +404,7 @@ final class Scene {
                              int tint, float tintAlpha, float lift, float body, float specular, float alpha) {
         radius = Math.min(radius, Math.min(r.width(), r.height()) / 2);
         if (body > 0) {
-            drawThrough(c, r, radius, a, aw, ah, alpha * body);
+            if (a != null) drawThrough(c, r, radius, a, aw, ah, alpha * body);
             if (b != null && mix > 0.004f) drawThrough(c, r, radius, b, aw, ah, alpha * body * mix);
             // The tint and the lift in one pass (fill rate is what this GPU runs out of): the lift pulls the tint a
             // little toward white instead of a second full-area fill.
