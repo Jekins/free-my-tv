@@ -359,13 +359,7 @@ final class FilterPanel {
 
     private void enterPane() {
         if (chips.isEmpty()) return;
-        focus = 0;
-        for (int i = 0; i < chips.size(); i++) {   // the first option that's picked (in a section of several, the first)
-            if (state(chips.get(i)) == ON) {
-                focus = i;
-                break;
-            }
-        }
+        focus = 0;   // the first option, picked or not (as → reads: the next thing to the right)
         Chip c = chips.get(focus);
         wantX = c.x + c.w / 2;
         inPane = true;
@@ -879,7 +873,7 @@ final class FilterPanel {
 
     // MARK: - Drawing
 
-    private int ink, glassChip, rim;
+    private int ink, glassChip, rim, warm;
     private float dark;
 
     /**
@@ -891,6 +885,7 @@ final class FilterPanel {
         ink = blend(INK, WHITE, dark);
         glassChip = blend(Ui.alpha(0xFF000000, 0.06f), Ui.alpha(0xFFFFFFFF, 0.12f), dark);
         rim = blend(Ui.alpha(0xFFFFFFFF, 0.75f), Ui.alpha(0xFFFFFFFF, 0.16f), dark);
+        warm = blend(Ui.ACCENT_DEEP, Ui.ACCENT, dark);   // the accent as text and rims: deeper on the light glass
         float left = panel.left + PAD * k;
         title.setColor(ink);
         c.drawText(heading, left + 26 * k, panel.top + PAD * k + HEAD * k * 0.5f + Ui.halfCap(title) - 6 * k, title);
@@ -970,19 +965,20 @@ final class FilterPanel {
             Label l = labels.get(i);
             if (l.y > viewTop && l.y < viewBottom + LABEL_H * k) c.drawText(l.text, l.x, l.y, labelPaint);
         }
-        // Fills: picked in the accent, left out red, the years between faintly in the accent; the rest glass, with a bright
-        // rim.
-        stroke.setStrokeWidth(1.5f * k);
+        // Fills: picked in the accent, left out red; the rest glass, with a bright rim, and the years between the picked
+        // ones (and their decades) with the accent's rim and text.
         for (int i = 0; i < chips.size(); i++) {
             Chip chip = chips.get(i);
             if (chip.y < viewTop || chip.y > viewBottom) continue;
             tmp.set(chip.x, chip.y, chip.x + chip.w, chip.y + ch);
             int st = state(chip);
-            fill.setColor(st == ON ? Ui.ACCENT : st == OUT ? Ui.alpha(RED, 0.92f) : st == WITHIN ? Ui.alpha(Ui.ACCENT, 0.3f) : glassChip);
+            fill.setColor(st == ON ? Ui.ACCENT : st == OUT ? Ui.alpha(RED, 0.92f) : glassChip);
             c.drawRoundRect(tmp, r, r, fill);
-            if (st == OFF) {
-                stroke.setColor(rim);
-                tmp.inset(0.75f * k, 0.75f * k);
+            if (st == OFF || st == WITHIN) {
+                float sw = (st == WITHIN ? 2 : 1.5f) * k;
+                stroke.setColor(st == WITHIN ? Ui.alpha(warm, 0.85f) : rim);
+                stroke.setStrokeWidth(sw);
+                tmp.inset(sw / 2, sw / 2);
                 c.drawRoundRect(tmp, r, r, stroke);
             }
         }
@@ -1012,13 +1008,14 @@ final class FilterPanel {
             Chip chip = chips.get(i);
             if (chip.y < viewTop || chip.y > viewBottom) continue;
             int st = state(chip);
-            // Dark on the yellow, white on the red. Under the focus (as much of it as the capsule covers): dark text, or the
-            // accent's deep yellow for a picked one, red for one left out.
+            // Dark on the yellow, white on the red, the accent between the picked years. Under the focus (as much of it as
+            // the capsule covers): dark text, or the accent's deep yellow for a picked one or one between, red for one left
+            // out.
             float ox = Math.max(0, Math.min(chip.x + chip.w, pl + pw) - Math.max(chip.x, pl));
             float oy = Math.max(0, Math.min(chip.y + ch, pt + ph) - Math.max(chip.y, pt));
             float f = p * Math.min(1, ox * oy / (chip.w * ch));
-            int rest = st == ON ? INK : st == OUT ? 0xFFFFFFFF : ink;
-            int focused = st == ON ? Ui.ACCENT_DEEP : st == OUT ? RED : INK;
+            int rest = st == ON ? INK : st == OUT ? 0xFFFFFFFF : st == WITHIN ? warm : ink;
+            int focused = st == ON || st == WITHIN ? Ui.ACCENT_DEEP : st == OUT ? RED : INK;
             int color = blend(rest, focused, f);
             boolean glyph = chip.multi && (st == ON || st == OUT);
             float gw = glyph ? GLYPH * k : 0, x = chip.x + (chip.w - chip.textW * chip.size - gw) / 2, mid = chip.y + ch / 2;

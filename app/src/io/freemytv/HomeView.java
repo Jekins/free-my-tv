@@ -166,10 +166,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     // At the top: tabs (0 to TABS - 1) and icon-only buttons (TABS on); the row's cards
     private int tab, topIndex, cardIndex;
+    // The tab whose row shows. Switching tabs, the row fades out (rowOut) drifting away from the side the focus went to
+    // (rowDir), and the new tab's fades in (rowIn) from that side: quick, and only alpha and a shift (no layer).
+    private int rowTab, rowDir;
+    private final Spring rowOut = new Spring(0.16f, 1, 1), rowIn = new Spring(0.3f, 1, 1);
+    private float rowA = 1;     // the row's alpha this frame
     private int widgetIndex;    // with TalkBack on, the drawer's weather (0) or quotes (1) card can take the focus
     private List<Recs.Pick> cards = new ArrayList<>();
     // The tabs, then the round buttons at the top right (up to HomeApps.MAX_TOP).
     private final Spring[] topFocus = new Spring[TABS + HomeApps.MAX_TOP];
+    // The tabs' focus pill: its left edge and width, gliding from tab to tab (as the filters' focus does).
+    private final Spring tabPillX = new Spring(0.3f, 0.8f, 0), tabPillW = new Spring(0.3f, 0.8f, 0);
     private final RectF[] topRects = new RectF[TABS + HomeApps.MAX_TOP];
     // Search (Trakt's), from the magnifier before the tabs (zone Z_SEARCH: the magnifier, or the field once open). OK
     // on it turns the tabs into a glass field and brings up the TV's keyboard; a moment after the typing stops the row
@@ -633,6 +640,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             updatePicks();
         }
         if (tab != 0) selectTab(0);
+        if (rowTab != tab) swapRow(false);
         cardIndex = 0;      // Home: the row slides back to its first card, and the background follows it
         handler.removeCallbacks(focusBackground);
         handler.post(focusBackground);
@@ -906,7 +914,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (reorderAnim) tilesMoving |= stepReorder(dt, up);
         boolean statusMoving = step(statusFocus, dt);
         boolean heroMoving = heroFocus.step(dt);
-        boolean topMoving = step(topFocus, dt);
+        boolean topMoving = step(topFocus, dt) | tabPillX.step(dt) | tabPillW.step(dt);
         // The menu has faded: a title hidden from it leaves the row, and the row slides back.
         if (!menuOpen && menuWarm == 0 && menu.value <= 0.002f) {
             if (hideAfter != null) recs.hide(hideAfter);
@@ -918,7 +926,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // titles load.
         float shiftShown = menuShift.value;
         boolean cardsMoving = step(cardFocus, dt) | step(cardWide, dt) | rowScroll.step(dt) | rowNudge.step(dt)
-                | menuShift.step(dt) | slots > cards.size() | up < fadingUntil;
+                | menuShift.step(dt) | rowOut.step(dt) | rowIn.step(dt) | slots > cards.size() | up < fadingUntil;
+        if (rowTab != tab && rowOut.value < 0.04f) {
+            swapRow(true);   // the last tab's row has faded: the selected one's comes in
+            cardsMoving = true;
+        }
         if (menuWaitsRow && Math.abs(shiftShown - menuShift.target) < 3 * k) {
             // A few px short of its place (a critically damped spring takes another ~0.1 s to cover them), the row stops
             // where the frame on screen has it, and that frame is copied for the menu.
@@ -2198,6 +2210,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         heroFocus.target = !sheetOpen && zone == Z_HERO ? 1 : 0;
         if (snap) heroFocus.snap(heroFocus.target);
         boolean topChanged = aim(topFocus, !sheetOpen && zone == Z_TOP ? topIndex : -1, snap);
+        // The pill goes to the selected tab: gliding from the last one while the tabs have the focus, else at once (it
+        // grows in there).
+        RectF selected = topRects[tab];
+        if (snap || tabsFocus() < 0.01f) {
+            tabPillX.snap(selected.left);
+            tabPillW.snap(selected.width());
+        } else if (tabPillX.target != selected.left || tabPillW.target != selected.width()) {
+            tabPillX.target = selected.left;
+            tabPillW.target = selected.width();
+            topChanged = true;
+        }
         boolean mic = searchOpen && onMic;
         float searchTarget = !sheetOpen && zone == Z_SEARCH && !mic ? 1 : 0, micTarget = !sheetOpen && zone == Z_SEARCH && mic ? 1 : 0;
         heroChanged |= searchFocus.target != searchTarget || micFocus.target != micTarget;
@@ -2535,6 +2558,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             holdArmed = false;      // another key while OK is held: no move mode
             handler.removeCallbacks(holdStart);
         }
+        if (down && rowTab != tab && code != KeyEvent.KEYCODE_DPAD_LEFT && code != KeyEvent.KEYCODE_DPAD_RIGHT) swapRow(false);
         switch (code) {
             case KeyEvent.KEYCODE_DPAD_LEFT:
                 if (down) move(-1, 0);
@@ -3015,7 +3039,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void applyFilters() {
         Recs.Filter f = filterPanel.draft();
         if (f.equals(recs.filter(null))) return;
-        if (TAB_KIND[tab] == null) {
+        if (TAB_KIND[rowTab] == null) {
             cardIndex = 0;
             rowReset = true;
         }
@@ -4001,6 +4025,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         star.close();
         for (CardText t : cardWords) if (t != null) t.generation = -1;   // cut again at the new size
         aimRow(true);
+        tabPillX.snap(topRects[tab].left);
+        tabPillW.snap(topRects[tab].width());
         for (HomeApps.Item it : lightButtons) {
             Symbols.warm(getContext(), it.symbol, 27 * k);
             Symbols.warm(getContext(), it.symbol, 27 * k * 1.1f);
@@ -4011,7 +4037,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /**
      * The current tab's row (Explore, Movies, Shows): its cards, plus empty ones while more are being looked up, and
-     * the background, from the focused card. Cards added at the end slide in; a different list takes its place at once.
+     * the background, from the focused card. Cards added at the end slide in; a different list takes its place at once
+     * (another tab's fades in: swapRow).
      */
     private void updateCards() {
         String kind = rowKind();
@@ -4156,13 +4183,32 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         onWallpaper();   // your photos came in: the photo of the day goes, and Bing isn't asked
     };
 
+    /** The tab, at once; its row takes the last one's place once that has faded out (doFrame: swapRow). */
     private void selectTab(int index) {
         if (index == tab) return;
+        rowDir = index > tab ? 1 : -1;
         tab = index;
-        cardIndex = 0;      // each tab's row starts at its first card
+        rowOut.target = 0;
+        heroDirty = true;
+        wake();
+    }
+
+    /** The selected tab's row in place of the one showing, from its first card; `fade`: it fades in. */
+    private void swapRow(boolean fade) {
+        rowTab = tab;
+        cardIndex = 0;
         rowReset = true;
         updateCards();
-        heroDirty = true;
+        rowOut.snap(1);
+        rowIn.snap(fade ? 0 : 1);
+        rowIn.target = 1;
+    }
+
+    /** How much the tabs have the focus (as one tab's spring rises, the last one's falls). */
+    private float tabsFocus() {
+        float f = 0;
+        for (int i = 0; i < TABS; i++) f += topFocus[i].value;
+        return Ui.clamp(f);
     }
 
     /**
@@ -4230,43 +4276,45 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
             return;
         }
-        // Text tabs (the selected one in bold, in the main text color); with focus on the tabs, the selected one gets
-        // the white pill with a shadow and grows a little (the tvOS focus). As the search's field takes their place,
-        // they fade away drifting right: each part's own alpha (a layer for them cost this TV's GPU a pass a frame,
-        // 40 frames a second instead of 50 as the field opened).
-        float focus = Ui.clamp(topFocus[tab].value), gone = Ui.clamp(searchMorph.value), shown = 1 - gone;
+        // Text tabs (the selected one in bold, in the main text color); with focus on the tabs, the white pill with a
+        // shadow, a little larger (the tvOS focus), gliding from tab to tab, the names dark where it is. As the search's
+        // field takes their place, they fade away drifting right: each part's own alpha (a
+        // layer for them cost this TV's GPU a pass a frame, 40 frames a second instead of 50 as the field opened).
+        float focus = tabsFocus(), gone = Ui.clamp(searchMorph.value), shown = 1 - gone;
+        float pillL = tabPillX.value, pillR = pillL + tabPillW.value;
         c.save();
         c.translate(60 * k * gone, 0);
+        if (focus > 0.01f && gone < 0.999f) {
+            RectF r = topRects[tab];
+            float s = 1 + 0.05f * focus, half = tabPillW.value * s / 2, mid = (pillL + pillR) / 2;
+            cell.set(mid - half, r.centerY() - r.height() * s / 2, mid + half, r.centerY() + r.height() * s / 2);
+            float rr = cell.height() / 2;
+            tmp.set(cell);
+            tmp.offset(0, 8 * k * focus);
+            shadow.setColor(Ui.alpha(0xFF000000, tone(0.22f, 0.4f) * focus * shown));
+            // Hollow: its width changes on every frame of the glide (a blur mask would be made and uploaded each time);
+            // the white pill covers the middle.
+            shadows.draw(c, tmp, rr, SHADOW_BLUR * k, shadow, true);
+            fill.setShader(null);
+            fill.setColor(Ui.alpha(0xFFFFFFFF, focus * shown));
+            c.drawRoundRect(cell, rr, rr, fill);
+        }
         for (int i = 0; i < TABS && gone < 0.999f; i++) {
             RectF r = topRects[i];
-            if (i == tab && focus > 0.01f) {
-                float s = 1 + 0.05f * focus;
-                cell.set(r.centerX() - r.width() * s / 2, r.centerY() - r.height() * s / 2,
-                        r.centerX() + r.width() * s / 2, r.centerY() + r.height() * s / 2);
-                float rr = cell.height() / 2;
-                if (focus > 0.01f) {
-                    tmp.set(cell);
-                    tmp.offset(0, 8 * k * focus);
-                    shadow.setColor(Ui.alpha(0xFF000000, tone(0.22f, 0.4f) * focus * shown));
-                    shadows.draw(c, tmp, rr, SHADOW_BLUR * k, shadow);
-                }
-                fill.setShader(null);
-                fill.setColor(Ui.alpha(0xFFFFFFFF, focus * shown));
-                c.drawRoundRect(cell, rr, rr, fill);
-            }
             Paint p = i == tab ? lTabOn : lTab;
-            if (i == tab) lTabOn.setColor(blend(tone(L_INK, WHITE), L_INK, focus));   // always dark on the white pill
+            if (i == tab) lTabOn.setColor(tone(L_INK, WHITE));
             int ink = p.getColor();
-            if (shown < 1) p.setColor(Ui.alpha(ink, shown));
+            p.setColor(Ui.alpha(ink, shown));
             float tw = p.measureText(tabs()[i]);
             c.drawText(tabs()[i], r.centerX() - tw / 2, r.centerY() + Ui.halfCap(p), p);
             p.setColor(ink);
-            if (i == tab && focus > 0.01f && TAB_KIND[i] == null && traktIn && !searchOpen) {
+            float under = focus * Ui.clamp((Math.min(r.right, pillR) - Math.max(r.left, pillL)) / r.width());
+            if (under > 0.01f && TAB_KIND[i] == null && traktIn && !searchOpen) {
                 // Focused, Explore says ↑ opens its filters: a small chevron over the pill (the tab keeps its height).
-                float cx = r.centerX(), cy = cell.top - 20 * k;
+                float cx = r.centerX(), cy = r.centerY() - r.height() * (1 + 0.05f * focus) / 2 - 20 * k;
                 c.save();
                 c.rotate(180, cx, cy);
-                Symbols.draw(getContext(), c, "chevron_down", cx, cy, 40 * k, Ui.alpha(tone(L_INK, WHITE), 0.85f * focus * shown));
+                Symbols.draw(getContext(), c, "chevron_down", cx, cy, 40 * k, Ui.alpha(tone(L_INK, WHITE), 0.85f * under * shown));
                 c.restore();
             }
             if (TAB_KIND[i] == null && !recs.filter(null).none()) {
@@ -4276,14 +4324,40 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 c.drawCircle(r.centerX() + tw / 2 + 9 * k, r.centerY() - Ui.halfCap(p) - 2 * k, 5 * k, fill);
             }
         }
+        if (focus > 0.01f && gone < 0.999f) {
+            // On the pill (`cell`), the names again, always dark, cut at its edges: as it glides, a name darkens letter by
+            // letter.
+            c.save();
+            c.clipRect(cell);
+            for (int i = 0; i < TABS; i++) {
+                RectF r = topRects[i];
+                if (r.right <= cell.left || r.left >= cell.right) continue;
+                Paint p = i == tab ? lTabOn : lTab;
+                int ink = p.getColor();
+                p.setColor(Ui.alpha(L_INK, focus * shown));
+                c.drawText(tabs()[i], r.centerX() - p.measureText(tabs()[i]) / 2, r.centerY() + Ui.halfCap(p), p);
+                p.setColor(ink);
+            }
+            c.restore();
+        }
         c.restore();
         if (searchOn()) drawSearch(c);
+        // Switching tabs: the row's alpha (each card's parts take it: no layer) and its drift.
+        float out = Ui.clamp(rowOut.value), in = Ui.clamp(rowIn.value);
+        rowA = out * in;
+        c.save();
+        c.translate(rowDir * k * (48 * (1 - in) - 24 * (1 - out)), 0);
         String kind = rowKind();
         String empty = searchOpen ? searchEmpty : slots > 0 || recs.loading(kind) ? null
                 : Recs.WATCHLIST.equals(kind) ? (traktIn ? Ui.tr("Your Trakt watchlist is empty. Hold OK on a card to add it.")
                         : Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."))
                 : !recs.filter(kind).none() ? Ui.tr("Nothing here with these filters. Press ↑ on the tab to change them.") : null;
-        if (empty != null) c.drawText(empty, w / 2f, (L_CARDS_TOP + L_CARD_H / 2) * k + Ui.halfCap(lEmpty), lEmpty);
+        if (empty != null) {
+            int emptyInk = lEmpty.getColor();
+            lEmpty.setColor(Ui.alpha(emptyInk, rowA));
+            c.drawText(empty, w / 2f, (L_CARDS_TOP + L_CARD_H / 2) * k + Ui.halfCap(lEmpty), lEmpty);
+            lEmpty.setColor(emptyInk);
+        }
         // The row, from each card's width this frame (never under the tall one); x0 is each card's place without the
         // stretch. The card the focus goes to pushes the next one only by what would bring their edges (as drawn, the
         // focused one 5% larger) closer than their gap once settled: so it moves with the stretch, not before. The card
@@ -4312,6 +4386,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (i != top && cardX[i] + cardW[i] > -reach && cardX[i] < w + reach) drawLightCard(c, i);
         }
         if (top >= 0) drawLightCard(c, top);
+        c.restore();
         if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
     }
 
@@ -4386,7 +4461,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.scale(s, s);
         tmp.set(-bw / 2, -ch / 2, bw / 2, ch / 2);
         tmp.offset(0, (10 + 14 * f) * k);
-        shadowDeep.setColor(Ui.alpha(0xFF000000, tone(0.14f, 0.32f) + tone(0.2f, 0.28f) * f));
+        shadowDeep.setColor(Ui.alpha(0xFF000000, (tone(0.14f, 0.32f) + tone(0.2f, 0.28f) * f) * rowA));
         // A card with a title is opaque (its photo, or its color until the photo comes): its shadow's middle, which it
         // covers, isn't drawn (with the taller cards, the row went from 58 to 57 frames a second without this).
         shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep, p != null);
@@ -4397,20 +4472,20 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             // No photo yet: the card's color; an empty card breathes until its title comes.
             float pulse = p != null ? 1 : 0.75f + 0.25f * (float) Math.cos(up * (2 * Math.PI / 1400));
             fill.setShader(null);
-            fill.setColor(Ui.alpha(tone(0xFFDADADF, 0xFF2C2C2E), pulse));
+            fill.setColor(Ui.alpha(tone(0xFFDADADF, 0xFF2C2C2E), pulse * rowA));
             c.drawRoundRect(cell, r, r, fill);
         }
         if (shown > 0) {
-            imageFill.setAlpha(Math.round(255 * shown));
+            imageFill.setAlpha(Math.round(255 * shown * rowA));
             coverImage(c, b.card, b.cardShader, cell, r);
             imageFill.setAlpha(255);
         }
         Bitmap logo = shown > 0 ? b.logo : null;
-        if (logo != null) drawLogo(c, logo, cx, cy, bw, ch, s, wide, shown);
+        if (logo != null) drawLogo(c, logo, cx, cy, bw, ch, s, wide, shown * rowA);
         CardText words = p == null ? null : cardWords[i];
-        if (words != null && !words.badge.isEmpty() && shown > 0) drawBadge(c, words, cx, cy, bw, ch, s, shown);
+        if (words != null && !words.badge.isEmpty() && shown > 0) drawBadge(c, words, cx, cy, bw, ch, s, shown * rowA);
         if (f > 0.01f) {
-            int alpha = Math.round(255 * f);
+            int alpha = Math.round(255 * f * rowA);
             c.save();
             c.translate(cx, cy);
             c.scale(s, s);
@@ -4432,6 +4507,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // The title, unless the logo says it (the details then take its line): cut for its width at rest; while the card
         // changes width, the wide one, clipped to the card.
         float base = top + bh + 46 * k;
+        int titleInk = lCardTitle.getColor();
+        lCardTitle.setColor(Ui.alpha(titleInk, rowA));
         if (logo == null && (wide > 0.999f || wide < 0.001f)) {
             c.drawText(wide > 0.5f ? t.wideTitle : t.tallTitle, left, base, lCardTitle);
         } else if (logo == null) {
@@ -4440,7 +4517,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawText(t.wideTitle, left, base, lCardTitle);
             c.restore();
         }
-        float details = smoothstep(0.55f, 1, wide);
+        lCardTitle.setColor(titleInk);
+        float details = smoothstep(0.55f, 1, wide) * rowA;
         if (details < 0.01f || (t.meta.isEmpty() && t.rating.isEmpty())) return;
         float metaBase = logo != null ? base : top + bh + 80 * k, x = left;
         int metaColor = lCardMeta.getColor();
@@ -4673,7 +4751,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** The row's kind: the search's answers while its field is open, else the selected tab's. */
     private String rowKind() {
-        return searchOpen ? Recs.SEARCH : TAB_KIND[tab];
+        return searchOpen ? Recs.SEARCH : TAB_KIND[rowTab];
     }
 
     /**
