@@ -2007,7 +2007,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (Prefs.quotes() && HomeData.active().length > 0) drawQuotesCard(c, quotesCard);
     }
 
-    /** Square drawer button: symbol and name; an input with no device is dimmed. Focused: white, with dark text. */
+    /**
+     * Square drawer button: symbol and name; an input with no device is dimmed. The magnifier's glass and shadow (as the
+     * dock's above it); focused: white, with dark text.
+     */
     private void drawDrawerTile(Canvas c, int i) {
         HomeApps.Item it = drawerItems.get(i);
         float f = Ui.clamp(drawerFocus[i].value), s = 1 + 0.07f * f;
@@ -2015,13 +2018,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float cx = base.centerX(), cy = base.centerY();
         cell.set(cx - base.width() * s / 2, cy - base.height() * s / 2, cx + base.width() * s / 2, cy + base.height() * s / 2);
         float r = 20 * k * s;
-        if (f > 0.01f) {
-            tmp.set(cell);
-            tmp.offset(0, 12 * k * f);
-            shadow.setColor(Ui.alpha(0xFF000000, 0.45f * f));
-            shadows.draw(c, tmp, r, SHADOW_BLUR * k, shadow);
-        }
-        if (f < 0.99f) drawerGlass(c, cell, r, 0.7f, 0x14000000, 6 * k);
+        tmp.set(cell);
+        tmp.offset(0, (6 + 8 * f) * k);
+        shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f) + tone(0.14f, 0.2f) * f));
+        shadows.draw(c, tmp, r, SHADOW_BLUR * k, shadow);
+        buttonGlass(c, cell, r, 1 - f);
         if (f > 0.01f) {
             fill.setShader(null);
             fill.setColor(Ui.alpha(WHITE, f));
@@ -2033,7 +2034,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         drawerLabel.setColor(ink);
         drawerLabel.setTextSize(23 * k * s);
         float room = cell.width() - 16 * k, wide = drawerLabel.measureText(it.label);
-        // A long name ("Home Settings", an input you renamed) shrinks a little before it gets cut.
+        // A long name ("Launcher Settings", an input you renamed) shrinks a little before it gets cut.
         if (wide > room) drawerLabel.setTextSize(Math.max(18 * k * s, 23 * k * s * room / wide));
         fitPaint.set(drawerLabel);
         String label = TextUtils.ellipsize(it.label, fitPaint, room, TextUtils.TruncateAt.END).toString();

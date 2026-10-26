@@ -310,7 +310,7 @@ final class HomeApps {
     static List<Item> drawerShortcuts(Context c) {
         List<Item> items = new ArrayList<>();
         items.add(shortcut(ALL_APPS, "all", Ui.tr("All Apps"), "apps"));
-        items.add(shortcut(SETTINGS, "settings", Ui.tr("Home Settings"), "settings"));
+        items.add(shortcut(SETTINGS, "settings", Ui.tr("Launcher Settings"), "settings"));   // all of ours, not only Home Settings
         items.add(shortcut(ANDROID_SETTINGS, "tv-settings", Ui.tr("TV Settings"), "tv_settings"));
         // HY300 projectors (Hotack, Allwinner H713): keystone and focus live in the maker's settings app, and the
         // stock home screen was the only way to its Miracast receiver. Each shows only where the TV has it.
