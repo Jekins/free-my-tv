@@ -4140,10 +4140,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Text tabs; the focus pill extends 26 px past the text (the first tab's text starts at the margin).
         float pad = 26 * k, tabTop = L_TABBAR_TOP * k, tabBottom = (L_TABBAR_TOP + L_TABBAR_H) * k;
         float x = MARGIN * k - pad;
-        // Before them, the search's magnifier: a round pill as tall as a tab's, where the first tab's pill was.
+        // Before them, the search's magnifier: a glass circle as tall as a tab's pill, where the first tab's pill was, and
+        // as far from it as the round buttons are from each other. The tabs' pills sit 4 apart (only one ever shows),
+        // but the magnifier always shows: a focused tab's pill, 5% larger, would touch it.
         searchRect.set(x, tabTop, x + L_TABBAR_H * k, tabBottom);
         snap(searchRect);
-        if (searchOn()) x = searchRect.right + 4 * k;
+        if (searchOn()) x = searchRect.right + L_BUTTON_GAP * k;
         for (int i = 0; i < TABS; i++) {
             float tw = Math.max(lTabOn.measureText(tabs()[i]), lTab.measureText(tabs()[i]));
             topRects[i].set(x, tabTop, x + tw + 2 * pad, tabBottom);
