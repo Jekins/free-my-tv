@@ -1573,9 +1573,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.offset(0, 18 * k);
         shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f)));
         shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
-        // The magnifier's glass and shadow (drawSearch): nearly clear, a hint of white by day and of smoke at night, a
-        // soft rim; clear, so the background changing under it doesn't redraw it.
-        scene.clear(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.18f, 0.08f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1);
+        // The magnifier's glass and shadow (drawSearch); clear, so the background changing under it doesn't redraw it.
+        buttonGlass(c, platterRect, radius, 1);
+    }
+
+    /**
+     * The round buttons', the magnifier's and the dock's glass: nearly clear, a hint of white by day; at night, as Liquid
+     * Glass over dark content, a little lighter than what's behind it, not darker. Without shaders (its tint at least
+     * 35% there), smoked at night.
+     */
+    private void buttonGlass(Canvas c, RectF r, float radius, float alpha) {
+        int tint = scene.shaded() ? 0xFFFFFFFF : tone(0xFFFFFFFF, SMOKE);
+        scene.clear(c, r, radius, tint, tone(0.18f, 0.06f), tone(0.02f, 0.025f), tone(0.6f, 0.55f), alpha);
     }
 
     /** The quotes row's text and sizes, for one set of coins, prices and text size. */
@@ -4688,7 +4697,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             tmp.offset(0, (6 + 8 * f) * k);
             shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f) + tone(0.14f, 0.2f) * f));
             shadows.draw(c, tmp, rad, SHADOW_BLUR * k, shadow);
-            scene.clear(c, cell, rad, tone(0xFFFFFFFF, SMOKE), tone(0.18f, 0.08f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1 - f);
+            buttonGlass(c, cell, rad, 1 - f);
             if (f > 0.01f) {
                 fill.setShader(null);
                 fill.setColor(Ui.alpha(0xFFFFFFFF, f));
@@ -5012,7 +5021,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.offset(0, (6 + 8 * f) * k);
         shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f) + tone(0.14f, 0.2f) * f));
         shadows.draw(c, tmp, rr, SHADOW_BLUR * k, shadow);
-        scene.clear(c, cell, rr, tone(0xFFFFFFFF, SMOKE), tone(0.18f, 0.08f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1 - f);
+        buttonGlass(c, cell, rr, 1 - f);
         if (f > 0.01f) {
             fill.setShader(null);
             fill.setColor(Ui.alpha(0xFFFFFFFF, f));
