@@ -322,6 +322,8 @@ final class Trakt {
         int[] status = new int[1];
         JSONObject answer = post(API + path, body, clientId, access(false), status);
         if (status[0] == 401) answer = post(API + path, body, clientId, access(true), status);
+        // What Trakt did (added, existing, not found: counts and ids, no token), as a write's only trace
+        AppLog.w("Trakt " + path + " " + kind + " " + tmdbId + ": HTTP " + status[0] + " " + answer);
         if (status[0] != 200 && status[0] != 201) throw new IOException("Trakt returned HTTP " + status[0]);   // 420: a limit
         JSONObject missing = answer.optJSONObject("not_found");
         JSONArray lost = missing == null ? null : missing.optJSONArray(list);
