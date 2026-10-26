@@ -19,7 +19,7 @@ MAP = {
     "chevron_down": ("keyboard_arrow_down", 0), "sunrise": ("wb_twilight", 1), "sunset": ("wb_twilight", 1),
     "live_tv": ("live_tv", 1), "bitcoin": ("currency_bitcoin", 0),
     "keystone": ("settings_overscan", 1), "cast": ("cast", 1), "hide": ("visibility_off", 1),
-    "bookmark_add": ("bookmark_add", 0), "bookmark_remove": ("bookmark_remove", 0), "search": ("search", 0),
+    "bookmark_add": ("bookmark_add", 0), "bookmark_remove": ("bookmark_remove", 0), "search": ("search", 0, 700, 200),   # as heavy as the filled gear beside it
     "mic": ("mic", 1),
 }
 
@@ -35,11 +35,14 @@ def main():
     os.makedirs(out, exist_ok=True)
     big_font = ImageFont.truetype(font_path, em * 8)
     axes = [a["name"] if isinstance(a["name"], str) else a["name"].decode() for a in big_font.get_variation_axes()]
-    for name, (material, fill) in MAP.items():
+    for name, spec in MAP.items():
+        # (Material name, filled?) and, for an outline icon that sits beside filled ones, a weight and grade of its own.
+        material, fill = spec[0], spec[1]
+        weight, grade = (spec[2], spec[3]) if len(spec) > 3 else (600, 0)
         values = []
         for axis in axes:
             a = axis.lower()
-            values.append(fill if "fill" in a else 0 if "grad" in a else 48 if "optical" in a or "opsz" in a else 600)
+            values.append(fill if "fill" in a else grade if "grad" in a else 48 if "optical" in a or "opsz" in a else weight)
         big_font.set_variation_by_axes(values)
         ch = chr(codes[material])
         # Drawn 8x larger without smoothing (the variable font's overlapping contours leave no gaps), then scaled down.

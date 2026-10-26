@@ -177,7 +177,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // field, Back from the field to the tabs; the text stays until Home. The keyboard types into an invisible EditText:
     // the field is drawn here, with the tabs.
     private static final long SEARCH_AFTER_MS = 400, CARET_MS = 530, KEYBOARD_AFTER_MS = 320;
-    private static final float SEARCH_FIELD_W = 1040;
+    // The magnifier at 30 pt, the round buttons' icons at 27: an outline drawn smaller (136 px against the gear's 150), it
+    // reads as large and as heavy as the filled gear only that much larger.
+    private static final float SEARCH_FIELD_W = 1040, SEARCH_ICON = 30;
     private final RectF searchRect = new RectF(), fieldRect = new RectF();
     private final Spring searchFocus = new Spring(0.26f, 0.85f, 0), searchMorph = new Spring(0.34f, 0.86f, 0);
     private boolean searchOpen, caretOn;
@@ -776,8 +778,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (String s : new String[] {"play", "check", "hide", "bookmark_add", "bookmark_remove", "chevron_left", "chevron_right"}) {
             Symbols.warm(getContext(), s, 30 * k);   // a pick's menu, the filters
         }
-        Symbols.warm(getContext(), "search", 28 * k);   // the magnifier, at rest and focused
-        Symbols.warm(getContext(), "search", 28 * k * 1.05f);
+        Symbols.warm(getContext(), "search", SEARCH_ICON * k);   // the magnifier, at rest and focused
+        Symbols.warm(getContext(), "search", SEARCH_ICON * k * 1.1f);
         Symbols.warm(getContext(), "mic", 26 * k);   // the field's microphone, at rest and focused
         Symbols.warm(getContext(), "mic", 26 * k * 1.08f);
         layoutShelf();
@@ -5009,34 +5011,34 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /**
-     * The magnifier, and the field it becomes: a round pill like a focused tab's (white, with a shadow, when focused);
-     * open, it stretches to the field's width as the tabs fade away, glass while the focus is on the answers. In it, the
-     * text (or what to type), and the caret while it has the focus.
+     * The magnifier, and the field it becomes: a glass circle like the round buttons at the top right (light by day,
+     * smoked at night, its soft shadow), white and 10% larger when focused; open, it stretches to the field's width as
+     * the tabs fade away (the field doesn't grow), glass while the focus is on the answers. In it, the text (or what to
+     * type), and the caret while it has the focus.
      */
     private void drawSearch(Canvas c) {
         float f = Ui.clamp(searchFocus.value), m = Ui.clamp(searchMorph.value);
-        float s = 1 + 0.05f * f * (1 - m);   // the magnifier grows like a tab's pill; the field doesn't
+        float s = 1 + 0.1f * f * (1 - m);
         float right = searchRect.right + (fieldRect.right - searchRect.right) * Math.max(0, searchMorph.value);
         float cx = (searchRect.left + right) / 2, cy = searchRect.centerY(), hw = (right - searchRect.left) / 2 * s;
         float hh = searchRect.height() / 2 * s;
         cell.set(cx - hw, cy - hh, cx + hw, cy + hh);
         float rr = hh;
-        if (f > 0.01f) {
-            tmp.set(cell);
-            tmp.offset(0, 8 * k * f);
-            shadow.setColor(Ui.alpha(0xFF000000, tone(0.22f, 0.4f) * f));
-            shadows.draw(c, tmp, rr, SHADOW_BLUR * k, shadow);
-        }
-        scene.clear(c, cell, rr, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), m * (1 - f));
+        tmp.set(cell);
+        tmp.offset(0, (6 + 8 * f) * k);
+        shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f) + tone(0.14f, 0.2f) * f));
+        shadows.draw(c, tmp, rr, SHADOW_BLUR * k, shadow);
+        scene.clear(c, cell, rr, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1 - f);
         if (f > 0.01f) {
             fill.setShader(null);
             fill.setColor(Ui.alpha(0xFFFFFFFF, f));
             c.drawRoundRect(cell, rr, rr, fill);
         }
-        // Dark on the white pill; at rest, the magnifier as gray as a tab's name, the field's ink as dark as the text.
+        // Dark on the white circle; at rest as the round buttons' icons (dark by day, white at night), and the field's
+        // text as dark.
         int ink = blend(tone(L_INK, WHITE), L_INK, f);
-        Symbols.draw(getContext(), c, "search", cell.left + searchRect.width() / 2 * s, cy, 28 * k * s,
-                blend(m > 0 ? tone(L_INK, WHITE) : lTab.getColor(), L_INK, f));
+        Symbols.draw(getContext(), c, "search", cell.left + searchRect.width() / 2 * s, cy, SEARCH_ICON * k * s,
+                blend(tone(L_INK, 0xEBFFFFFF), L_INK, f));
         float text = smoothstep(0.55f, 1, m);
         if (text < 0.01f) return;
         float x = cell.left + L_TABBAR_H * k, base = cy + Ui.halfCap(lSearch);
