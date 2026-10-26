@@ -20,7 +20,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Trakt API client: personal recommendations (OAuth), public user lists and search (client ID only).
+ * Trakt API client: personal recommendations and the person's own lists (OAuth), public user lists and search (client
+ * ID only).
  * List fetching stays so Couchmoney-style slugs still work if OAuth is not set up. The tokens come built into the app
  * (tools/trakt_login.py) or from signing in on the TV (Home Settings → Trakt), which wins until a build brings others.
  */
@@ -33,8 +34,11 @@ final class Trakt {
         final int traktId;
         final float rating;     // Trakt's average (0 to 10)
         final int votes;
+        final List<String> genres;   // Trakt's slugs ("science-fiction"), with extended=full
+        final String status;    // a show's ("returning series", "ended"…), with extended=full; "" for a movie
 
-        Item(String type, String title, int year, int tmdbId, int traktId, float rating, int votes) {
+        Item(String type, String title, int year, int tmdbId, int traktId, float rating, int votes, List<String> genres,
+                String status) {
             this.type = type;
             this.title = title;
             this.year = year;
@@ -42,6 +46,21 @@ final class Trakt {
             this.traktId = traktId;
             this.rating = rating;
             this.votes = votes;
+            this.genres = genres;
+            this.status = status;
+        }
+    }
+
+    /** One of the signed-in person's own lists: a smart one (Trakt fills it from filters) or a personal one. */
+    static final class UserList {
+        final String ref;       // a personal list's Trakt id, or "s" and a smart list's
+        final String name;
+        final String media;     // a smart list's "movies" or "shows"; "" for a personal list (it can hold both)
+
+        UserList(String ref, String name, String media) {
+            this.ref = ref;
+            this.name = name;
+            this.media = media;
         }
     }
 
@@ -435,6 +454,115 @@ final class Trakt {
         return items;
     }
 
+    /**
+     * The signed-in person's own lists, as the Trakt app has them: their smart lists first, then their personal ones
+     * (not the watchlist, nor the lists they like). Throws when Trakt can't be asked.
+     */
+    static List<UserList> lists() throws IOException {
+        List<UserList> out = new ArrayList<>();
+        try {   // newer than the API's documentation: without them, the personal lists still come
+            JSONArray smart = getArray("/users/me/smart-lists", true);
+            for (int i = 0; i < smart.length(); i++) {
+                JSONObject o = smart.optJSONObject(i);
+                JSONObject ids = o == null ? null : o.optJSONObject("ids");
+                int id = ids == null ? 0 : ids.optInt("trakt");
+                if (id > 0) out.add(new UserList("s" + id, o.optString("name"), o.optString("media_type")));
+            }
+        } catch (IOException | org.json.JSONException e) {
+            AppLog.w("Trakt smart lists: " + e.getMessage());
+        }
+        JSONArray array;
+        try {
+            array = getArray("/users/me/lists", true);
+        } catch (org.json.JSONException e) {
+            throw new IOException("Trakt lists: " + e.getMessage());
+        }
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject o = array.optJSONObject(i);
+            JSONObject ids = o == null ? null : o.optJSONObject("ids");
+            int id = ids == null ? 0 : ids.optInt("trakt");
+            if (id > 0) out.add(new UserList(String.valueOf(id), o.optString("name"), ""));
+        }
+        return out;
+    }
+
+    /**
+     * The movies ("movie") or shows ("show") on one of the person's lists (`ref`, as UserList has it), in its order on
+     * Trakt. A smart list's come ranked by Trakt (its first 250); a personal list's come by rank, and the list says how
+     * it's sorted (by date added, title, rating…), which is done here. Throws when Trakt can't be asked, or the list is
+     * gone (HTTP 404).
+     */
+    static List<Item> listItems(String ref, String type) throws IOException {
+        boolean smart = ref.startsWith("s");
+        int listId;
+        try {
+            listId = Integer.parseInt(smart ? ref.substring(1) : ref);
+        } catch (NumberFormatException e) {
+            throw new IOException("Trakt list " + ref + "?");
+        }
+        if (smart) {
+            List<Item> items = new ArrayList<>();
+            try {
+                JSONArray array = getArray("/smart-lists/" + listId + "/items?extended=full&limit=250", true);
+                for (int i = 0; i < array.length(); i++) {
+                    Item item = parseItem(array.optJSONObject(i), null);
+                    if (item != null && item.type.equals(type)) items.add(item);
+                }
+            } catch (org.json.JSONException e) {
+                throw new IOException("Trakt smart list: " + e.getMessage());
+            }
+            return items;
+        }
+        JSONObject list;
+        JSONArray array;
+        try {
+            list = new JSONObject(get("/users/me/lists/" + listId, true));
+            array = getArray("/users/me/lists/" + listId + "/items/" + type + "?extended=full", true);
+        } catch (org.json.JSONException e) {
+            throw new IOException("Trakt list: " + e.getMessage());
+        }
+        List<JSONObject> entries = new ArrayList<>();
+        for (int i = 0; i < array.length(); i++) if (array.optJSONObject(i) != null) entries.add(array.optJSONObject(i));
+        String by = list.optString("sort_by", "rank");
+        if (by.equals("random")) {
+            java.util.Collections.shuffle(entries);
+        } else {
+            java.util.Collections.sort(entries, (a, b) -> compareListed(a, b, by));
+            if (list.optString("sort_how").equals("desc")) java.util.Collections.reverse(entries);
+        }
+        List<Item> items = new ArrayList<>();
+        for (JSONObject entry : entries) {
+            Item item = parseItem(entry, null);
+            if (item != null) items.add(item);
+        }
+        return items;
+    }
+
+    /** Two list items in the list's sort, ascending; what an item doesn't carry (popularity, my rating…) goes by rank. */
+    private static int compareListed(JSONObject a, JSONObject b, String by) {
+        JSONObject ma = media(a), mb = media(b);
+        switch (by) {
+            case "added": return a.optString("listed_at").compareTo(b.optString("listed_at"));
+            case "title": return ma.optString("title").compareToIgnoreCase(mb.optString("title"));
+            case "released": return released(ma).compareTo(released(mb));
+            case "runtime": return Integer.compare(ma.optInt("runtime"), mb.optInt("runtime"));
+            case "percentage": return Double.compare(ma.optDouble("rating", 0), mb.optDouble("rating", 0));
+            case "votes": return Integer.compare(ma.optInt("votes"), mb.optInt("votes"));
+            default: return Integer.compare(a.optInt("rank"), b.optInt("rank"));
+        }
+    }
+
+    private static JSONObject media(JSONObject entry) {
+        JSONObject m = entry.optJSONObject(entry.optString("type"));
+        return m != null ? m : new JSONObject();
+    }
+
+    /** A movie's release date or a show's first air date, as text that sorts by date. */
+    private static String released(JSONObject media) {
+        String at = media.optString("released");
+        return at.isEmpty() ? media.optString("first_aired") : at;
+    }
+
     private static Item parseItem(JSONObject obj, String defaultType) {
         if (obj == null) return null;
         String type = obj.optString("type");
@@ -458,7 +586,11 @@ final class Trakt {
         int tmdbId = ids != null ? ids.optInt("tmdb") : 0;
         int traktId = ids != null ? ids.optInt("trakt") : 0;
         if (tmdbId <= 0 || title.isEmpty()) return null;
-        return new Item(type, title, year, tmdbId, traktId, (float) media.optDouble("rating", 0), media.optInt("votes"));
+        List<String> genres = new ArrayList<>();
+        JSONArray g = media.optJSONArray("genres");
+        for (int i = 0; g != null && i < g.length(); i++) genres.add(g.optString(i));
+        return new Item(type, title, year, tmdbId, traktId, (float) media.optDouble("rating", 0), media.optInt("votes"),
+                genres, media.optString("status"));
     }
 
     private static JSONArray getArray(String path, boolean oauth) throws IOException, org.json.JSONException {

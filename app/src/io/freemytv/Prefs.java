@@ -180,6 +180,28 @@ final class Prefs {
     static boolean coin(int i) { return sp().getBoolean("coin" + i, true); }
     static void setCoin(int i, boolean on) { put("coin" + i, on); }
 
+    // MARK: - Picks' lists
+
+    /**
+     * The Trakt list the Movies ("movie") or Shows ("tv") tab draws from, as "ref|name": Trakt.UserList's ref (a personal
+     * list's id, or "s" and a smart list's) and its name as it was picked, for the settings; "" for Trakt's
+     * recommendations.
+     */
+    static String recsList(String kind) { return sp().getString("recsList." + kind, ""); }
+    static void setRecsList(String kind, String ref, String name) { put("recsList." + kind, ref.isEmpty() ? "" : ref + "|" + name); }
+
+    /** The list's ref, "" for Trakt's recommendations. */
+    static String recsListRef(String kind) {
+        String v = recsList(kind);
+        int bar = v.indexOf('|');
+        return bar > 0 ? v.substring(0, bar) : "";
+    }
+
+    static String recsListName(String kind) {
+        String v = recsList(kind);
+        return v.substring(v.indexOf('|') + 1);
+    }
+
     // MARK: - Shelf
 
     /** Packages on the home shelf, in order; null until the user edits it (then the built-in list applies). */

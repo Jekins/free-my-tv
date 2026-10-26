@@ -180,6 +180,12 @@ building with `python3 tools/trakt_login.py`, which saves the tokens in `config.
 by itself each week; the TMDB key is still needed for the pictures. If Trakt can't be reached, the picks come from
 `trakt_user`'s public lists (Couchmoney's), then from TMDB.
 
+Signed in, *Home Settings* → *Movies* and *Shows* pick where each tab's titles come from: *Trakt recommendations* (as
+it starts), or one of your own Trakt lists (OK on the row brings them from Trakt): your smart lists of that kind first,
+then your personal ones. A tab then shows its list's movies (or shows) in the list's own order on Trakt (a smart
+list's: as Trakt ranks it, its first 250), and nothing else; Explore takes turns between the two. One personal list can
+serve both tabs. If the list is gone or empty, the tab falls back to Trakt's recommendations.
+
 Each row (Explore, Movies, Shows) starts with four cards, the fourth's edge showing past the others; reaching the last
 one brings three more. With Filmix, a title is looked up only when its row gets to it, so a refresh asks Filmix about a
 handful of titles, not all of them. A card shows the title's rating (Trakt's for Trakt's picks, else TMDB's), then a
@@ -199,10 +205,11 @@ episodes out since you last watched (the last 20 shows you watched, an episode f
 many you haven't seen. It follows Trakt every half hour. All of it shows, Filmix's or not: a title Filmix hasn't says so
 on its card, as in the search.
 
-Holding OK on the Movies or Shows tab opens its filters: year (by decade), rating (6, 7 or 8 and up, Trakt's), genre and,
-for shows, status (on the air, coming, ended, canceled), each *All* at first. ← → change a filter; OK or Back applies
-them. Trakt filters its recommendations itself, so a filter reaches past the unfiltered list's end; a filtered tab has a
-blue dot. Explore stays unfiltered.
+Holding OK on the Explore tab opens its filters: type (movies, shows or both), year (by decade), rating (6, 7 or 8 and
+up, Trakt's), genre and, with shows only, status (on the air, coming, ended, canceled), each *All* at first. ← → change
+a filter; OK or Back applies them. Trakt filters its recommendations itself, so a filter reaches past the unfiltered
+list's end; a tab's own list is filtered on the TV. Filtered, Explore has a blue dot. Movies and Shows always show their
+source whole.
 
 The magnifier before the tabs searches Trakt (its client ID is enough, no sign-in): OK on it turns the tabs into a field
 and brings up the TV's keyboard. A moment after the typing stops, the
