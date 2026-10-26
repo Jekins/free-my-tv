@@ -34,12 +34,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Home screen picks: what's trending this week plus recent releases (or your Trakt recommendations), only from the
+ * Home screen picks: what's trending this week plus recent releases (or your Trakt recommendations, or one of your Trakt
+ * lists for Movies and another for Shows, picked in Home Settings), only from the
  * streaming apps installed on the TV (Netflix, Prime Video, Disney+, Max, Apple TV, Okko, Hulu, Paramount+, Peacock,
  * Globoplay...), via TMDB (an open movie database that knows what streams where in each country). Each row (Explore,
  * Movies, Shows) shows four (the fourth's edge past the other three); the focus on the last card asks for three more
  * ({@link #more}). With Filmix, a title is looked up in Filmix only when its row gets to it: the rest wait in a queue.
- * Movies and Shows can be filtered (year, rating, genre, a show's status): Trakt filters its recommendations for them.
+ * Explore can be filtered (movies or shows, year, rating, genre, a show's status): Trakt filters its recommendations,
+ * and a tab's own list is filtered here.
  * The search field's row shows Trakt's answers for what is typed, each looked up the same way ({@link #search}).
  * "Watch" opens the service's app.
  *
@@ -77,10 +79,14 @@ final class Recs {
     static final int SEARCH_IDLE = 0, SEARCH_ASKING = 1, SEARCH_FILLING = 2, SEARCH_DONE = 3, SEARCH_FAILED = 4;
 
     /**
-     * A row's filters (Movies or Shows: hold OK on its tab), which Trakt applies to its recommendations: indexes into
-     * YEARS, RATINGS, GENRES and STATUSES (shows only), 0 = any. Saved by value, so the lists can change.
+     * Explore's filters (hold OK on its tab): indexes into TYPES, YEARS, RATINGS, GENRES and STATUSES (shows only), 0 =
+     * any. Trakt applies them to its recommendations; a tab's own list is filtered here ({@link #matches}). Saved by
+     * value, so the lists can change.
      */
     static final class Filter {
+        /** Movies and shows, movies only ("movie"), or shows only ("tv"). */
+        static final String[] TYPES = {null, "movie", "tv"};
+        static final int SHOWS = 2;
         /** Decades by their first year; 1900: before 1990. */
         static final int[] YEARS = {0, 2020, 2010, 2000, 1990, 1900};
         /** Trakt's rating (0 to 10), at least. */
@@ -91,19 +97,37 @@ final class Recs {
         /** Shows, as on trakt.tv: on the air, still to come, ended, canceled (Trakt's statuses, any of them). */
         static final String[] STATUSES = {null, "returning series,continuing", "upcoming,planned,in production,pilot", "ended",
             "canceled"};
-        static final Filter ANY = new Filter(0, 0, 0, 0);
+        static final Filter ANY = new Filter(0, 0, 0, 0, 0);
 
-        final int year, rating, genre, status;
+        final int type, year, rating, genre, status;
 
-        Filter(int year, int rating, int genre, int status) {
+        /** A status only with shows only (the only ones that have one). */
+        Filter(int type, int year, int rating, int genre, int status) {
+            this.type = type;
             this.year = year;
             this.rating = rating;
             this.genre = genre;
-            this.status = status;
+            this.status = type == SHOWS ? status : 0;
         }
 
         boolean none() {
-            return year == 0 && rating == 0 && genre == 0 && status == 0;
+            return type == 0 && year == 0 && rating == 0 && genre == 0 && status == 0;
+        }
+
+        /** Has `kind`'s titles ("movie" or "tv"). */
+        boolean takes(String kind) {
+            return type == 0 || TYPES[type].equals(kind);
+        }
+
+        /** A title of a list (Trakt's, with extended=full) that passes them, as Trakt's own filters would. */
+        boolean matches(Trakt.Item item) {
+            if (year > 0) {
+                int from = YEARS[year];
+                if (from == 1900 ? item.year <= 0 || item.year >= 1990 : item.year < from || item.year > from + 9) return false;
+            }
+            if (rating > 0 && item.rating < RATINGS[rating]) return false;
+            if (genre > 0 && !item.genres.contains(GENRES[genre])) return false;
+            return status == 0 || Arrays.asList(STATUSES[status].split(",")).contains(item.status);
         }
 
         /** Trakt's query parameters for `kind`'s recommendations ("movie" or "tv"). */
@@ -120,16 +144,18 @@ final class Recs {
         }
 
         String saved() {
-            return YEARS[year] + "|" + RATINGS[rating] + "|" + (genre == 0 ? "" : GENRES[genre]) + "|" + status;
+            return (type == 0 ? "" : TYPES[type]) + "|" + YEARS[year] + "|" + RATINGS[rating] + "|"
+                    + (genre == 0 ? "" : GENRES[genre]) + "|" + status;
         }
 
         static Filter parse(String saved) {
             String[] v = saved == null ? new String[0] : saved.split("\\|", -1);
-            if (v.length != 4) return ANY;
+            if (v.length != 5) return ANY;
             try {
-                return new Filter(indexOf(YEARS, Integer.parseInt(v[0])), indexOf(RATINGS, Integer.parseInt(v[1])),
-                        Math.max(0, Arrays.asList(GENRES).indexOf(v[2].isEmpty() ? null : v[2])),
-                        Math.max(0, Math.min(STATUSES.length - 1, Integer.parseInt(v[3]))));
+                return new Filter(Math.max(0, Arrays.asList(TYPES).indexOf(v[0].isEmpty() ? null : v[0])),
+                        indexOf(YEARS, Integer.parseInt(v[1])), indexOf(RATINGS, Integer.parseInt(v[2])),
+                        Math.max(0, Arrays.asList(GENRES).indexOf(v[3].isEmpty() ? null : v[3])),
+                        Math.max(0, Math.min(STATUSES.length - 1, Integer.parseInt(v[4]))));
             } catch (NumberFormatException e) {
                 return ANY;
             }
@@ -157,6 +183,8 @@ final class Recs {
     /** TMDB's Animation genre (movies and shows: cartoons and anime), left out with hide_animation=true. */
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
+    /** Titles a new list takes at most (movies and shows together): all of Trakt's recommendations, or of a list. */
+    private static final int LIST_MAX = 400;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
     private static final int CACHE_VERSION = 16;
     private static final boolean FILMIX_ONLY = "filmix".equals(Config.RECOMMENDATIONS_APP);
@@ -254,16 +282,18 @@ final class Recs {
      */
     private final Set<String> hidden = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final SharedPreferences hiddenPrefs;
-    /** Each row's filter (Explore has none), kept apart from the cache like `hidden`. */
+    /** Each row's filter (only Explore has one), kept apart from the cache like `hidden`. */
     private final Filter[] filters = {Filter.ANY, Filter.ANY, Filter.ANY, Filter.ANY};
     private final SharedPreferences filterPrefs;
     /**
-     * A row's own titles by key, in their order: a filtered Movies or Shows row's (Trakt's order for the filter), and the
-     * Watchlist row's. Its cards are these, as they're confirmed (the titles not looked up yet wait in the queue with
-     * the others). Empty while Trakt's answer is on its way; absent for a row without a filter (Explore, Movies and
-     * Shows show the recommendations: Pick.rec) and for the Watchlist until Trakt answers.
+     * A row's own titles by key, in their order: filtered Explore's (under EXPLORE: Trakt's order for the filter, or
+     * the lists'), and the Watchlist row's. Its cards are these, as they're confirmed (the titles not looked up yet wait
+     * in the queue with the others). Empty while Trakt's answer is on its way; absent for a row without a filter
+     * (Explore, Movies and Shows show the picks: Pick.rec) and for the Watchlist until Trakt answers.
      */
     private final Map<String, List<String>> rowTitles = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Filtered Explore's key in rowTitles (a map without null keys; Explore's kind is null) and in the saved filters. */
+    private static final String EXPLORE = "explore";
     /**
      * The person's Trakt watchlist (keys: a pick's menu says Add or Remove), and the shows they watch with episodes out
      * that they haven't seen (key → how many: the card says so). Replaced whole, never changed in place.
@@ -302,8 +332,10 @@ final class Recs {
         hiddenPrefs = c.getSharedPreferences("recs-hidden", Context.MODE_PRIVATE);
         hidden.addAll(hiddenPrefs.getStringSet("keys", new HashSet<>()));
         filterPrefs = c.getSharedPreferences("recs-filters", Context.MODE_PRIVATE);
-        filters[1] = Filter.parse(filterPrefs.getString("movie", null));
-        filters[2] = Filter.parse(filterPrefs.getString("tv", null));
+        filters[0] = Filter.parse(filterPrefs.getString(EXPLORE, null));
+        if (filterPrefs.contains("movie") || filterPrefs.contains("tv")) {
+            filterPrefs.edit().remove("movie").remove("tv").apply();   // Movies' and Shows' own filters, from before Explore's
+        }
         if (cache.getInt("version", 0) != CACHE_VERSION
                 || !Config.RECOMMENDATIONS_APP.equals(cache.getString("recommendationsApp", ""))) {
             cache.edit().clear().putInt("version", CACHE_VERSION)
@@ -331,12 +363,12 @@ final class Recs {
             }
             newEpisodes = fresh;
             watchAt = watch.optLong("at");
-            // A filtered row's titles, if they were fetched for the filter it has now; the watchlist's.
+            // Filtered Explore's titles, if they were fetched for the filter it has now; the watchlist's.
             JSONObject rows = new JSONObject(cache.getString("rows", "{}"));
-            for (String kind : new String[] {"movie", "tv", WATCHLIST}) {
+            for (String kind : new String[] {EXPLORE, WATCHLIST}) {
                 JSONObject o = rows.optJSONObject(kind);
-                if (o == null || (!kind.equals(WATCHLIST) && (filters[row(kind)].none()
-                        || !o.optString("filter").equals(filters[row(kind)].saved())))) continue;
+                if (o == null || (kind.equals(EXPLORE) && (filters[0].none()
+                        || !o.optString("filter").equals(filters[0].saved())))) continue;
                 List<String> keys = new ArrayList<>();
                 JSONArray a = o.optJSONArray("keys");
                 for (int i = 0; a != null && i < a.length(); i++) keys.add(a.optString(i));
@@ -418,7 +450,7 @@ final class Recs {
      */
     private List<Pick> order(String kind) {
         List<Pick> all = picks;
-        List<String> keys = kind == null ? null : rowTitles.get(kind);
+        List<String> keys = rowTitles.get(titlesKey(kind));
         if (keys == null) {
             List<Pick> out = new ArrayList<>();
             if (ownTitles(kind)) return out;   // its titles aren't in yet
@@ -435,9 +467,14 @@ final class Recs {
         return out;
     }
 
-    /** The row shows titles of its own (a filter's, or the watchlist), not the recommendations. */
+    /** The row shows titles of its own (filtered Explore, or the watchlist), not the picks. */
     private boolean ownTitles(String kind) {
-        return kind != null && (kind.equals(WATCHLIST) || !filters[row(kind)].none());
+        return WATCHLIST.equals(kind) || (kind == null && !filters[0].none());
+    }
+
+    /** The row's key in rowTitles: Explore's (kind null) is EXPLORE. */
+    private static String titlesKey(String kind) {
+        return kind == null ? EXPLORE : kind;
     }
 
     /** In the row: its own titles, or a recommendation of its kind. */
@@ -445,7 +482,7 @@ final class Recs {
         return keys != null ? keys.contains(key(p)) : p.rec && (kind == null || kind.equals(p.kind));
     }
 
-    /** The row's filter (Explore and Watchlist: none). */
+    /** The row's filter (only Explore has one). */
     Filter filter(String kind) {
         return filters[row(kind)];
     }
@@ -574,52 +611,53 @@ final class Recs {
     }
 
     /**
-     * Main thread: the row's new filter. Its titles come from Trakt again, filtered there (it reaches past the unfiltered
-     * list's end); meanwhile the row is empty, its cards pulsing. `failed` runs if Trakt can't be asked: the row goes back
-     * to what it showed.
+     * Main thread: Explore's new filter (kind null; the other rows have none). Its titles come again: Trakt's
+     * recommendations filtered there (it reaches past the unfiltered list's end), a tab's own list filtered here;
+     * meanwhile the row is empty, its cards pulsing. `failed` runs if Trakt can't be asked: the row goes back to what it
+     * showed.
      */
     void setFilter(String kind, Filter f, Runnable failed) {
         int r = row(kind);
         Filter before = filters[r];
-        if (kind == null || f.equals(before)) return;
-        List<String> keysBefore = rowTitles.get(kind);
+        if (kind != null || f.equals(before)) return;
+        List<String> keysBefore = rowTitles.get(EXPLORE);
         filters[r] = f;
-        filterPrefs.edit().putString(kind, f.saved()).apply();
+        filterPrefs.edit().putString(EXPLORE, f.saved()).apply();
         shown[r] = FIRST;
         if (f.none()) {
             generation[r]++;
             loadingMore[r] = false;
-            rowTitles.remove(kind);
+            rowTitles.remove(EXPLORE);
             refill(kind);
             notifyListeners();
             io.execute(this::save);
             return;
         }
-        loadFilter(kind, () -> {
+        loadFilter(() -> {
             filters[r] = before;
-            filterPrefs.edit().putString(kind, before.saved()).apply();
-            if (keysBefore != null) rowTitles.put(kind, keysBefore);
+            filterPrefs.edit().putString(EXPLORE, before.saved()).apply();
+            if (keysBefore != null) rowTitles.put(EXPLORE, keysBefore);
             failed.run();
         });
     }
 
     /**
-     * Main thread: the filtered row's titles from Trakt, the row empty and pulsing meanwhile. `failed` runs (on the main
-     * thread) if Trakt can't be asked; the row then has no titles until it's asked again.
+     * Main thread: filtered Explore's titles, the row empty and pulsing meanwhile. `failed` runs (on the main thread) if
+     * Trakt can't be asked; the row then has no titles until it's asked again.
      */
-    private void loadFilter(String kind, Runnable failed) {
-        int r = row(kind), gen = ++generation[r];
+    private void loadFilter(Runnable failed) {
+        int r = row(null), gen = ++generation[r];
         Filter f = filters[r];
-        rowTitles.put(kind, new ArrayList<>());
+        rowTitles.put(EXPLORE, new ArrayList<>());
         loadingMore[r] = true;
         filterTriedAt[r] = System.currentTimeMillis();
         notifyListeners();
         io.execute(() -> {
             List<String> keys;
             try {
-                keys = filteredKeys(kind, f, null);
+                keys = filteredKeys(f, null);
             } catch (IOException e) {
-                AppLog.w("Trakt filtered " + kind + ": " + e.getMessage());
+                AppLog.w("Trakt filtered: " + e.getMessage());
                 keys = null;
             }
             List<String> found = keys;
@@ -628,12 +666,12 @@ final class Recs {
                 loadingMore[r] = false;
                 if (found == null) {
                     generation[r]++;
-                    rowTitles.remove(kind);
+                    rowTitles.remove(EXPLORE);
                     failed.run();
                 } else {
-                    rowTitles.put(kind, found);
+                    rowTitles.put(EXPLORE, found);
                 }
-                refill(kind);
+                refill(null);
                 notifyListeners();
                 io.execute(this::save);
             });
@@ -646,15 +684,28 @@ final class Recs {
     }
 
     /**
-     * io thread: Trakt's recommendations for the row with filter `f`, by key in Trakt's order. The ones not known yet go
+     * io thread: filtered Explore's titles by key, movies and shows taking turns (or the one type the filter takes): from
+     * each tab's own list, filtered here, else from Trakt's recommendations, filtered there. The ones not known yet go
      * to the queue (or, while the list is being made, into `candidates`), to be looked up when the row gets to them.
      */
-    private List<String> filteredKeys(String kind, Filter f, List<Pick> candidates) throws IOException {
-        List<Trakt.Item> items = Trakt.recommendations(kind.equals("movie") ? "movies" : "shows", f.query(kind), 100);
+    private List<String> filteredKeys(Filter f, List<Pick> candidates) throws IOException {
+        List<Pick> movies = new ArrayList<>(), shows = new ArrayList<>();
+        for (String kind : new String[] {"movie", "tv"}) {
+            if (!f.takes(kind)) continue;
+            List<Trakt.Item> items = ownList(kind);
+            if (items.isEmpty()) {
+                items = Trakt.recommendations(kind.equals("movie") ? "movies" : "shows", f.query(kind), 100);
+            } else {
+                List<Trakt.Item> passed = new ArrayList<>();
+                for (Trakt.Item item : items) if (f.matches(item)) passed.add(item);
+                items = passed;
+            }
+            for (Trakt.Item item : items) (kind.equals("movie") ? movies : shows).add(pickFromTrakt(item, kind));
+        }
         List<Pick> found = new ArrayList<>();
-        for (Trakt.Item item : items) found.add(pickFromTrakt(item, kind));
+        alternate(found, new HashSet<>(), movies, shows, LIST_MAX);
         List<String> keys = enqueue(found, candidates, false);
-        AppLog.w("Trakt filtered " + kind + " " + f.saved() + ": " + keys.size() + " titles");
+        AppLog.w("Trakt filtered " + f.saved() + ": " + keys.size() + " titles");
         return keys;
     }
 
@@ -763,7 +814,7 @@ final class Recs {
      * in Trakt's order for it.
      */
     private Pick next(List<Pick> list, String kind, boolean take) {
-        List<String> keys = kind == null ? null : rowTitles.get(kind);
+        List<String> keys = rowTitles.get(titlesKey(kind));
         if (keys == null && ownTitles(kind)) return null;   // its titles aren't in yet
         int at = -1;
         if (keys == null) {
@@ -832,7 +883,7 @@ final class Recs {
 
     /** How many of `list` the row would show (a filtered row, the watchlist: its own titles). */
     private int count(List<Pick> list, String kind) {
-        List<String> keys = kind == null ? null : rowTitles.get(kind);
+        List<String> keys = rowTitles.get(titlesKey(kind));
         if (keys == null && ownTitles(kind)) return 0;
         int n = 0;
         for (Pick p : list) if (inRow(p, kind, keys)) n++;
@@ -840,18 +891,16 @@ final class Recs {
     }
 
     /**
-     * io thread, while the list is made again: each filtered row's titles from Trakt, the new ones added to `candidates`.
-     * If Trakt can't be asked, the row keeps the ones it had.
+     * io thread, while the list is made again: filtered Explore's titles, the new ones added to `candidates`. If Trakt
+     * can't be asked, the row keeps the ones it had.
      */
     private void filterRows(List<Pick> candidates) {
-        for (String kind : new String[] {"movie", "tv"}) {
-            Filter f = filters[row(kind)];
-            if (f.none()) continue;
-            try {
-                rowTitles.put(kind, filteredKeys(kind, f, candidates));
-            } catch (IOException e) {
-                AppLog.w("Trakt filtered " + kind + ": " + e.getMessage());
-            }
+        Filter f = filters[0];
+        if (f.none()) return;
+        try {
+            rowTitles.put(EXPLORE, filteredKeys(f, candidates));
+        } catch (IOException e) {
+            AppLog.w("Trakt filtered: " + e.getMessage());
         }
     }
 
@@ -928,12 +977,9 @@ final class Recs {
         if (!picks.isEmpty() && (sinceWatch < 0 || sinceWatch > (rowTitles.containsKey(WATCHLIST) ? WATCH_EVERY : 60_000L))) {
             loadWatchlist();
         }
-        for (String kind : new String[] {"movie", "tv"}) {
-            int r = row(kind);
-            long since = now - filterTriedAt[r];
-            if (!filters[r].none() && !rowTitles.containsKey(kind) && !picks.isEmpty() && (since < 0 || since > 60_000L)) {
-                loadFilter(kind, () -> {});
-            }
+        long sinceFilter = now - filterTriedAt[0];
+        if (!filters[0].none() && !rowTitles.containsKey(EXPLORE) && !picks.isEmpty() && (sinceFilter < 0 || sinceFilter > 60_000L)) {
+            loadFilter(() -> {});
         }
         long stamp = sourceStamp();   // a new key, country, animation choice or installed streaming-app set refetches
         boolean newKey = stamp != keyStamp;
@@ -1235,16 +1281,32 @@ final class Recs {
         // 1. Trending this week (or Trakt personal recommendations if configured), only what is
         //    on one of the TV's services: the details say where (and are then ready).
         List<Pick> hotMovies = new ArrayList<>(), hotShows = new ArrayList<>();
-        if (Trakt.hasOAuth() || (Trakt.hasKey() && !Config.TRAKT_USER.isEmpty())) {
+        // A tab's own list (Home Settings) comes first, and alone: no trending or new releases join it.
+        List<Trakt.Item> movieList = ownList("movie"), showList = ownList("tv");
+        for (Trakt.Item item : movieList) {
+            Pick pick = pickFromTrakt(item, "movie");
             try {
-                for (Trakt.Item item : traktItems("movies", Config.TRAKT_LIST_MOVIES)) {
+                fetchDetails(pick);
+                if (pick.pkg != null) hotMovies.add(pick);
+            } catch (Exception ignored) {}
+        }
+        for (Trakt.Item item : showList) {
+            Pick pick = pickFromTrakt(item, "tv");
+            try {
+                fetchDetails(pick);
+                if (pick.pkg != null) hotShows.add(pick);
+            } catch (Exception ignored) {}
+        }
+        if ((movieList.isEmpty() || showList.isEmpty()) && (Trakt.hasOAuth() || (Trakt.hasKey() && !Config.TRAKT_USER.isEmpty()))) {
+            try {
+                for (Trakt.Item item : movieList.isEmpty() ? traktItems("movies", Config.TRAKT_LIST_MOVIES) : new ArrayList<Trakt.Item>()) {
                     Pick pick = pickFromTrakt(item, "movie");
                     try {
                         fetchDetails(pick);
                         if (pick.pkg != null) hotMovies.add(pick);
                     } catch (Exception ignored) {}
                 }
-                for (Trakt.Item item : traktItems("shows", Config.TRAKT_LIST_SHOWS)) {
+                for (Trakt.Item item : showList.isEmpty() ? traktItems("shows", Config.TRAKT_LIST_SHOWS) : new ArrayList<Trakt.Item>()) {
                     Pick pick = pickFromTrakt(item, "tv");
                     try {
                         fetchDetails(pick);
@@ -1279,13 +1341,14 @@ final class Recs {
         JSONArray shows = get("/discover/tv?vote_count.gte=20&air_date.gte=" + day(-90) + "&air_date.lte=" + day(0)
                 + common).getJSONArray("results");
         List<Pick> newMovies = new ArrayList<>(), newShows = new ArrayList<>();
-        for (int i = 0; i < movies.length(); i++) add(newMovies, movies.getJSONObject(i), "movie");
-        for (int i = 0; i < shows.length(); i++) add(newShows, shows.getJSONObject(i), "tv");
-        // Trending first, then the new releases; movies and shows alternating, without repeats, up to 24.
+        if (movieList.isEmpty()) for (int i = 0; i < movies.length(); i++) add(newMovies, movies.getJSONObject(i), "movie");
+        if (showList.isEmpty()) for (int i = 0; i < shows.length(); i++) add(newShows, shows.getJSONObject(i), "tv");
+        // Trending first, then the new releases; movies and shows alternating, without repeats, up to 24 (a list: all).
+        int max = movieList.isEmpty() && showList.isEmpty() ? 24 : LIST_MAX;
         List<Pick> list = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        alternate(list, seen, hotMovies, hotShows, 24);
-        alternate(list, seen, newMovies, newShows, 24);
+        alternate(list, seen, hotMovies, hotShows, max);
+        alternate(list, seen, newMovies, newShows, max);
         if (list.isEmpty()) throw new IOException("TMDB returned no recommendations");
         for (Pick pick : list) pick.rec = true;
         picks = list;
@@ -1318,19 +1381,27 @@ final class Recs {
     private void fetchFilmixList(int period) throws Exception {
         if (!installed(Filmix.PKG)) throw new IOException(Filmix.UNAVAILABLE);
         List<Pick> movies = new ArrayList<>(), shows = new ArrayList<>();
+        // The person's own list for a tab, else Trakt's recommendations (or the lists built in), else TMDB's trending.
+        List<Trakt.Item> movieList = ownList("movie"), showList = ownList("tv");
+        for (Trakt.Item item : movieList) movies.add(pickFromTrakt(item, "movie"));
+        for (Trakt.Item item : showList) shows.add(pickFromTrakt(item, "tv"));
 
         if (Trakt.hasOAuth() || (Trakt.hasKey() && !Config.TRAKT_USER.isEmpty())) {
             try {
-                for (Trakt.Item item : traktItems("movies", Config.TRAKT_LIST_MOVIES)) {
-                    movies.add(pickFromTrakt(item, "movie"));
+                if (movies.isEmpty()) {
+                    for (Trakt.Item item : traktItems("movies", Config.TRAKT_LIST_MOVIES)) {
+                        movies.add(pickFromTrakt(item, "movie"));
+                    }
                 }
             } catch (Exception e) {
                 AppLog.w("Trakt movies: " + e.getMessage());
             }
 
             try {
-                for (Trakt.Item item : traktItems("shows", Config.TRAKT_LIST_SHOWS)) {
-                    shows.add(pickFromTrakt(item, "tv"));
+                if (shows.isEmpty()) {
+                    for (Trakt.Item item : traktItems("shows", Config.TRAKT_LIST_SHOWS)) {
+                        shows.add(pickFromTrakt(item, "tv"));
+                    }
                 }
             } catch (Exception e) {
                 AppLog.w("Trakt shows: " + e.getMessage());
@@ -1348,8 +1419,8 @@ final class Recs {
 
         List<Pick> candidates = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        // All of Trakt's recommendations (50 movies, 50 shows) are looked up in Filmix: none is cut before that.
-        alternate(candidates, seen, movies, shows, 100);
+        // All of Trakt's recommendations (50 movies, 50 shows), or of a list, are looked up in Filmix: none is cut before.
+        alternate(candidates, seen, movies, shows, LIST_MAX);
         missing.clear();
 
         if (candidates.size() < 40) {
@@ -1360,8 +1431,9 @@ final class Recs {
             JSONArray recentShows = get("/discover/tv?vote_count.gte=20&air_date.gte=" + day(-90)
                     + "&air_date.lte=" + day(0) + common).getJSONArray("results");
             List<Pick> discMovies = new ArrayList<>(), discShows = new ArrayList<>();
-            for (int i = 0; i < recentMovies.length(); i++) add(discMovies, recentMovies.getJSONObject(i), "movie");
-            for (int i = 0; i < recentShows.length(); i++) add(discShows, recentShows.getJSONObject(i), "tv");
+            // A tab with a list of its own shows only that list
+            if (movieList.isEmpty()) for (int i = 0; i < recentMovies.length(); i++) add(discMovies, recentMovies.getJSONObject(i), "movie");
+            if (showList.isEmpty()) for (int i = 0; i < recentShows.length(); i++) add(discShows, recentShows.getJSONObject(i), "tv");
             alternate(candidates, seen, discMovies, discShows, 60);
         }
         for (Pick pick : candidates) pick.rec = true;
@@ -1441,6 +1513,23 @@ final class Recs {
         } catch (Exception e) {
             AppLog.w("No TMDB details for " + key(pick) + " “" + pick.title + "”");
             return false;
+        }
+    }
+
+    /**
+     * The person's own Trakt list picked for the Movies ("movie") or Shows ("tv") tab (Home Settings), its titles of that
+     * kind in its order; empty without one, or when Trakt can't give it (then the recommendations stand in).
+     */
+    private static List<Trakt.Item> ownList(String kind) {
+        String list = Prefs.recsListRef(kind);
+        if (list.isEmpty() || !Trakt.hasOAuth()) return new ArrayList<>();
+        try {
+            List<Trakt.Item> items = Trakt.listItems(list, kind.equals("movie") ? "movie" : "show");
+            AppLog.w("Trakt list " + list + ": " + items.size() + " " + kind);
+            return items;
+        } catch (IOException e) {
+            AppLog.w("Trakt list " + list + ": " + e.getMessage());
+            return new ArrayList<>();
         }
     }
 
@@ -1703,6 +1792,8 @@ final class Recs {
         stamp = stamp * 31L + Config.TRAKT_CLIENT_ID.hashCode();
         stamp = stamp * 31L + Config.TRAKT_USER.hashCode();
         stamp = stamp * 31L + Trakt.account().hashCode();   // signing in or out of Trakt fetches the list again
+        stamp = stamp * 31L + Prefs.recsListRef("movie").hashCode();   // and so does another list for Movies or Shows
+        stamp = stamp * 31L + Prefs.recsListRef("tv").hashCode();
         if (FILMIX_ONLY) return stamp * 31L + (installed(Filmix.PKG) ? Filmix.PKG.hashCode() : 0);
         for (String[] service : SERVICES) stamp = stamp * 31L + (installed(service[2]) ? service[2].hashCode() : 0);
         return stamp;
@@ -1927,10 +2018,10 @@ final class Recs {
                     .putString("recommendationsApp", Config.RECOMMENDATIONS_APP)
                     .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION);
             JSONObject rows = new JSONObject();
-            for (String kind : new String[] {"movie", "tv", WATCHLIST}) {
+            for (String kind : new String[] {EXPLORE, WATCHLIST}) {
                 List<String> keys = rowTitles.get(kind);
                 if (keys != null && (kind.equals(WATCHLIST) || !keys.isEmpty())) {
-                    rows.put(kind, new JSONObject().put("filter", filters[row(kind)].saved()).put("keys", new JSONArray(keys)));
+                    rows.put(kind, new JSONObject().put("filter", filters[0].saved()).put("keys", new JSONArray(keys)));
                 }
             }
             e.putString("rows", rows.toString());

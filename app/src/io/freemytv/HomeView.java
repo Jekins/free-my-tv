@@ -2799,7 +2799,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     // MARK: - Holding OK: All Apps puts the app on the shelf or takes it off; on the shelf, the app is lifted to move;
-    // on a pick, its menu opens; on the Movies or Shows tab, its filters
+    // on a pick, its menu opens; on the Explore tab, its filters
 
     private void hold() {
         if (sheetOpen) toggleShelf(); else if (canPickMenu()) openPickMenu(); else if (canFilter()) openFilters(); else startReorder();
@@ -2873,21 +2873,20 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final long RATE_AFTER_MS = 1200;
     private static final String YOUTUBE = "com.google.android.youtube.tv";
     private final Spring menu = new Spring(0.34f, 0.86f, 0);
-    private final Spring[] menuFocus = new Spring[5];   // a pick's three items, or the filters' four rows and Reset
+    private final Spring[] menuFocus = new Spring[6];   // a pick's four items, or the filters' five rows and Reset
     private final Spring[] starFocus = new Spring[10];   // Trakt's own 1 to 10 (five stars with halves)
     /** While the menu is open, its card goes to the row's left end and the menu takes its right: the row's shift. */
     private final Spring menuShift = new Spring(0.16f, 1, 0);
     private boolean menuWaitsRow;   // the screen is copied, and the menu shown, once the row stops there
     private Recs.Pick hideAfter;    // "Don't recommend": it leaves the row once the menu has faded
     private Recs.Pick unlistAfter;  // off the watchlist from the Watchlist tab: it leaves that row once the menu has faded
-    // The same menu as a tab's filters (OK held on Movies or Shows): centered, nothing moves behind it. Its rows change
-    // `filterDraft` (indexes into Recs.Filter's lists: year, rating, genre, and the status for shows), which the row
-    // takes as the menu closes.
-    private static final int F_YEAR = 0, F_RATING = 1, F_GENRE = 2, F_STATUS = 3;
+    // The same menu as Explore's filters (OK held on its tab): centered, nothing moves behind it. Its rows change
+    // `filterDraft` (indexes into Recs.Filter's lists: type, year, rating, genre, and the status with shows only), which
+    // the row takes as the menu closes.
+    private static final int F_TYPE = 0, F_YEAR = 1, F_RATING = 2, F_GENRE = 3, F_STATUS = 4;
     private static final float FILTER_W = 820, FILTER_HEAD = 92;
     private boolean menuFilters;
-    private String filterKind;
-    private final int[] filterDraft = new int[4];
+    private final int[] filterDraft = new int[5];
     private boolean menuOpen, menuDirty, menuBackDirty, menuRight, menuCovers, menuSignedIn;   // signed in to Trakt: read once as it opens (a file)
     private Recs.Pick menuPick;
     private int menuCard, menuIndex, starIndex, menuShotId, menuWarm;
@@ -2914,7 +2913,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private int menuItems() {
-        if (menuFilters) return "tv".equals(filterKind) ? 5 : 4;   // the rows, then Reset
+        if (menuFilters) return filterDraft[F_TYPE] == Recs.Filter.SHOWS ? 6 : 5;   // the rows (Status with shows), Reset
         return menuCount;
     }
 
@@ -2967,29 +2966,25 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         wake();
     }
 
+    /** OK held on Explore's tab (the only one with filters: Movies and Shows show their source whole). */
     private boolean canFilter() {
-        return !sheetOpen && zone == Z_TOP && topIndex < TABS && picksOn();
+        return !sheetOpen && zone == Z_TOP && topIndex < TABS && TAB_KIND[topIndex] == null && picksOn();
     }
 
-    /** The tab's filters, over the screen blurred as behind a pick's menu (Explore has none: a toast says where they are). */
+    /** Explore's filters, over the screen blurred as behind a pick's menu. */
     private void openFilters() {
         handler.removeCallbacks(holdStart);
         holdArmed = false;
         if (menuOpen || !canFilter()) return;
         okHeld = true;
-        String kind = TAB_KIND[topIndex];
-        if (kind == null || kind.equals(Recs.WATCHLIST)) {
-            showToast(Ui.tr("Filters are on the Movies and Shows tabs."));
-            return;
-        }
         if (!Recs.canFilter()) {
             showToast(Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."));
             return;
         }
         menuOpen = menuFilters = true;
         menuPick = null;
-        filterKind = kind;
-        Recs.Filter f = recs.filter(kind);
+        Recs.Filter f = recs.filter(null);
+        filterDraft[F_TYPE] = f.type;
         filterDraft[F_YEAR] = f.year;
         filterDraft[F_RATING] = f.rating;
         filterDraft[F_GENRE] = f.genre;
@@ -3006,23 +3001,23 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         wake();
     }
 
-    /** As the filters close: the row takes them, if they changed (Recs asks Trakt for its titles again). */
+    /** As the filters close: Explore takes them, if they changed (Recs asks Trakt for its titles again). */
     private void applyFilters() {
-        String kind = filterKind;
-        Recs.Filter f = new Recs.Filter(filterDraft[F_YEAR], filterDraft[F_RATING], filterDraft[F_GENRE],
-                "tv".equals(kind) ? filterDraft[F_STATUS] : 0);
-        if (kind == null || f.equals(recs.filter(kind))) return;
-        if (kind.equals(TAB_KIND[tab])) {
+        Recs.Filter f = new Recs.Filter(filterDraft[F_TYPE], filterDraft[F_YEAR], filterDraft[F_RATING],
+                filterDraft[F_GENRE], filterDraft[F_STATUS]);
+        if (f.equals(recs.filter(null))) return;
+        if (TAB_KIND[tab] == null) {
             cardIndex = 0;
             rowReset = true;
         }
-        recs.setFilter(kind, f, () -> showToast(Ui.tr("Trakt didn't answer. Try again in a moment.")));
+        recs.setFilter(null, f, () -> showToast(Ui.tr("Trakt didn't answer. Try again in a moment.")));
         heroDirty = true;
     }
 
     /** The options a filter row cycles through (the first one: all). */
     private static int filterOptions(int field) {
         switch (field) {
+            case F_TYPE: return Recs.Filter.TYPES.length;
             case F_YEAR: return Recs.Filter.YEARS.length;
             case F_RATING: return Recs.Filter.RATINGS.length;
             case F_GENRE: return Recs.Filter.GENRES.length;
@@ -3032,6 +3027,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private static String filterName(int field) {
         switch (field) {
+            case F_TYPE: return Ui.tr("filter|Type");
             case F_YEAR: return Ui.tr("filter|Year");
             case F_RATING: return Ui.tr("filter|Rating");
             case F_GENRE: return Ui.tr("filter|Genre");
@@ -3042,6 +3038,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static String filterValue(int field, int i) {
         if (i == 0) return Ui.tr("filter|All");
         switch (field) {
+            case F_TYPE: return tabs()[i];   // Movies, Shows: as their tabs say
             case F_YEAR:
                 int from = Recs.Filter.YEARS[i];
                 return from == 1900 ? Ui.trf("filter|Before {year}", "year", "1990") : Ui.trf("filter|{year}s", "year", String.valueOf(from));
@@ -3081,8 +3078,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private boolean filtersDrafted() {
-        return filterDraft[F_YEAR] != 0 || filterDraft[F_RATING] != 0 || filterDraft[F_GENRE] != 0
-                || ("tv".equals(filterKind) && filterDraft[F_STATUS] != 0);
+        return filterDraft[F_TYPE] != 0 || filterDraft[F_YEAR] != 0 || filterDraft[F_RATING] != 0 || filterDraft[F_GENRE] != 0
+                || (filterDraft[F_TYPE] == Recs.Filter.SHOWS && filterDraft[F_STATUS] != 0);
+    }
+
+    /** Status comes and goes with Shows: the panel takes its new height, and the focus on Reset stays on it. */
+    private void filterRowsChanged(int before) {
+        int n = menuItems();
+        if (n == before) return;
+        if (menuIndex >= before - 1) menuIndex = n - 1;
+        placeFilters();
+        menuBackDirty = true;   // the glass, at its new height
+        aimMenu(false);
     }
 
     /**
@@ -3111,6 +3118,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     int next = Math.max(0, Math.min(filterOptions(field) - 1, filterDraft[field] + dx));
                     if (next != filterDraft[field]) {
                         filterDraft[field] = next;
+                        filterRowsChanged(n);
                         menuDirty = true;
                         click.move();
                         announceForAccessibility(menuLabel(menuIndex));
@@ -3130,6 +3138,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                         click.open();
                         if (menuIndex == n - 1) {
                             java.util.Arrays.fill(filterDraft, 0);
+                            filterRowsChanged(n);
                             menuDirty = true;
                             announceForAccessibility(Ui.tr("filter|All"));
                         } else {
@@ -3628,7 +3637,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float ih = MENU_ITEM_H * k, pad = MENU_PAD * k, gap = MENU_GAP * k, inset = 30 * k;
         int n = menuItems();
         menuTitle.setColor(tone(L_INK, WHITE));
-        String heading = Ui.trf("Filters: {tab}", "tab", tabs()["tv".equals(filterKind) ? 2 : 1]);
+        String heading = Ui.trf("Filters: {tab}", "tab", tabs()[0]);
         c.drawText(heading, menuRect.left + pad + inset, menuRect.top + pad + FILTER_HEAD * k * 0.6f, menuTitle);
         for (int i = 0; i < n; i++) {
             float f = Ui.clamp(menuFocus[i].value), y = menuRect.top + pad + FILTER_HEAD * k + i * (ih + gap);
@@ -4440,7 +4449,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             float tw = p.measureText(tabs()[i]);
             c.drawText(tabs()[i], r.centerX() - tw / 2, r.centerY() + Ui.halfCap(p), p);
             p.setColor(ink);
-            if (TAB_KIND[i] != null && !recs.filter(TAB_KIND[i]).none()) {
+            if (TAB_KIND[i] == null && !recs.filter(null).none()) {
                 // Filtered: a dot at the name's top right, in Apple's blue.
                 fill.setShader(null);
                 fill.setColor(Ui.alpha(0xFF0A84FF, shown));
@@ -4450,8 +4459,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.restore();
         if (searchOn()) drawSearch(c);
         String kind = rowKind();
-        String empty = searchOpen ? searchEmpty : slots > 0 || kind == null || recs.loading(kind) ? null
-                : kind.equals(Recs.WATCHLIST) ? (Recs.canFilter() ? Ui.tr("Your Trakt watchlist is empty. Hold OK on a card to add it.")
+        String empty = searchOpen ? searchEmpty : slots > 0 || recs.loading(kind) ? null
+                : Recs.WATCHLIST.equals(kind) ? (Recs.canFilter() ? Ui.tr("Your Trakt watchlist is empty. Hold OK on a card to add it.")
                         : Ui.tr("Sign in to Trakt first: Free My TV › Home Settings › Trakt."))
                 : !recs.filter(kind).none() ? Ui.tr("Nothing here with these filters. Hold OK on the tab to change them.") : null;
         if (empty != null) c.drawText(empty, w / 2f, (L_CARDS_TOP + L_CARD_H / 2) * k + Ui.halfCap(lEmpty), lEmpty);

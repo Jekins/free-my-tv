@@ -31,6 +31,7 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -161,8 +162,9 @@ public class SettingsActivity extends Activity {
         private final List<String> shelfOrder = new ArrayList<>();
         private boolean editingTop;
         private int pickFor, pickCurrent, pickScroll;   // pickFor: the remote button (index + 1)
-        private static final int PICK_CITY = 0, PICK_LANGUAGE = -1, PICK_SLEEP = -2, PICK_PLACE = -3;
-        /** Sleep Timer's pickers (PICK_SLEEP and below): their choices as {value, name}, and the value now. */
+        private static final int PICK_CITY = 0, PICK_LANGUAGE = -1, PICK_SLEEP = -2, PICK_PLACE = -3, PICK_MOVIES = -4,
+                PICK_SHOWS = -5;
+        /** The pickers from PICK_SLEEP down (Sleep Timer's, the picks' lists): their choices as {value, name}, and the value now. */
         private final List<String[]> choices = new ArrayList<>();
         private String choiceNow = "";
         private final List<String[]> cities = new ArrayList<>();
@@ -191,6 +193,7 @@ public class SettingsActivity extends Activity {
         private String traktStatus = "", traktUser = "";
         private boolean traktWaiting, traktIn;
         private int traktRun;
+        private int listsFor;   // the row (MOVIES_ROW, SHOWS_ROW) whose Trakt lists are being asked for, or 0
         private StaticLayout traktAbout;
         private int traktAboutGeneration = -1;
         private final RectF traktCard = new RectF();
@@ -209,7 +212,7 @@ public class SettingsActivity extends Activity {
                 // What can change the reasons away from a key: a switch (or the watchdog's revert) and the overlay's and the
                 // listener's checks.
                 int whyNow = (freeActive() ? 1 : 0) | (Capabilities.refused(getContext(), Capabilities.OVERLAY) ? 2 : 0)
-                        | (Capabilities.refused(getContext(), Capabilities.LISTENER) ? 4 : 0);
+                        | (Capabilities.refused(getContext(), Capabilities.LISTENER) ? 4 : 0) | (traktIn ? 8 : 0);
                 if (whyNow != whyState) whyRows = null;
                 whyState = whyNow;
                 // A switch just ended: TalkBack reads how it went (the newest notice).
@@ -707,14 +710,14 @@ public class SettingsActivity extends Activity {
                         if (e.getRepeatCount() == 0) backDown = true;
                     } else {
                         if (backDown && !e.isCanceled()) {
-                            if (screen == PICKER && pickFor <= PICK_SLEEP) {
+                            if (screen == PICKER && (pickFor == PICK_MOVIES || pickFor == PICK_SHOWS)) {
+                                showSetting(pickFor == PICK_MOVIES ? MOVIES_ROW : SHOWS_ROW);
+                            } else if (screen == PICKER && pickFor <= PICK_SLEEP) {
                                 focus = powerFocus(pickFor == PICK_SLEEP ? P_SLEEP : P_WHERE);
                                 pickScroll = 0;   // the picker's scroll isn't this short list's
                                 screen = POWER;
                             } else if (screen == PICKER && (pickFor == PICK_CITY || pickFor == PICK_LANGUAGE)) {
-                                focus = pickFor == PICK_CITY ? CITY_ROW : 0;
-                                pickScroll = 0;   // both rows are on the list's first screen
-                                screen = HOME_SETTINGS;
+                                showSetting(pickFor == PICK_CITY ? CITY_ROW : 0);
                             } else if (screen == PICKER) {
                                 focus = pickFor - 1;
                                 screen = REMOTE_KEYS;
@@ -742,10 +745,10 @@ public class SettingsActivity extends Activity {
         // MARK: - Home Settings and Remote Buttons
 
         private static final String[] UNITS = {"auto", "C", "F"}, THEMES = {"auto", "light", "dark", "photo"};
-        /** Home Settings: language, temperature, theme, my photos, sounds, watch from the screensaver, Trakt, weather, city,
-         *  forecast, now playing, quotes, then one row per coin. */
-        private static final int PHOTOS_ROW = 3, SAVER_ROW = 5, TRAKT_ROW = 6, WEATHER_ROW = 7, CITY_ROW = 8, FORECAST_ROW = 9,
-                PLAYING_ROW = 10, QUOTES_ROW = 11, COIN_ROWS = 12;
+        /** Home Settings: language, temperature, theme, my photos, sounds, watch from the screensaver, Trakt, the Trakt lists
+         *  for Movies and Shows, weather, city, forecast, now playing, quotes, then one row per coin. */
+        private static final int PHOTOS_ROW = 3, SAVER_ROW = 5, TRAKT_ROW = 6, MOVIES_ROW = 7, SHOWS_ROW = 8, WEATHER_ROW = 9,
+                CITY_ROW = 10, FORECAST_ROW = 11, PLAYING_ROW = 12, QUOTES_ROW = 13, COIN_ROWS = 14;
         /** Home Settings rows on screen at once (what fits above the hints at 1080p); a longer list scrolls. */
         private static final int SETTINGS_VISIBLE = 10;
 
@@ -762,6 +765,8 @@ public class SettingsActivity extends Activity {
             l.add(Ui.tr("Navigation sounds"));
             l.add(Ui.tr("Watch from the screensaver"));
             l.add("Trakt");
+            l.add(Ui.tr("Movies"));
+            l.add(Ui.tr("Shows"));
             l.add(Ui.tr("Weather widget"));
             l.add(Ui.tr("City"));
             l.add(Ui.tr("Forecast"));
@@ -790,6 +795,8 @@ public class SettingsActivity extends Activity {
             v[4] = onOff(Prefs.sounds());
             v[SAVER_ROW] = onOff(Prefs.saverWatch());
             v[TRAKT_ROW] = !traktIn ? Ui.tr("Sign in") : traktUser.isEmpty() ? Ui.tr("Signed in") : traktUser;
+            v[MOVIES_ROW] = listsFor == MOVIES_ROW ? Ui.tr("Loading your lists…") : listName("movie");
+            v[SHOWS_ROW] = listsFor == SHOWS_ROW ? Ui.tr("Loading your lists…") : listName("tv");
             v[WEATHER_ROW] = onOff(Prefs.weather());
             v[CITY_ROW] = !cityStatus.isEmpty() ? cityStatus : Prefs.city().isEmpty() ? "—" : Prefs.city();
             v[FORECAST_ROW] = Prefs.forecast().equals("days") ? Ui.tr("Next days") : Ui.tr("Next hours");
@@ -846,6 +853,8 @@ public class SettingsActivity extends Activity {
                             ? Ui.tr("Turn on the Quotes widget to pick its coins.")
                             : screen == HOME_SETTINGS && pickScroll + r == TRAKT_ROW && !Trakt.hasKey()
                             ? Ui.tr("Needs trakt_client_id in config.properties: see the README.")
+                            : screen == HOME_SETTINGS && (pickScroll + r == MOVIES_ROW || pickScroll + r == SHOWS_ROW) && !traktIn
+                            ? Ui.tr("Sign in to Trakt to pick one of your lists.")
                             : need == null ? null : Capabilities.missing(getContext(), need);
                 }
             }
@@ -928,6 +937,67 @@ public class SettingsActivity extends Activity {
                 default:
                     adjust(1);
             }
+        }
+
+        /** What Movies (kind "movie") or Shows ("tv") draws from: the list picked for it, or Trakt's recommendations. */
+        private static String listName(String kind) {
+            return !Prefs.recsListRef(kind).isEmpty() ? Prefs.recsListName(kind) : Ui.tr("Trakt recommendations");
+        }
+
+        /**
+         * OK on Movies or Shows: the person's Trakt lists, asked for now, to pick from: Trakt's recommendations, their
+         * smart lists of that kind, their personal lists.
+         */
+        private void askLists(int row) {
+            if (listsFor != 0) return;
+            listsFor = row;
+            invalidate();
+            new Thread(() -> {
+                List<Trakt.UserList> lists;
+                try {
+                    lists = Trakt.lists();
+                } catch (IOException e) {
+                    AppLog.w("Trakt lists: " + e.getMessage());
+                    lists = null;
+                }
+                List<Trakt.UserList> found = lists;
+                handler.post(() -> {
+                    listsFor = 0;
+                    invalidate();
+                    if (screen != HOME_SETTINGS) return;
+                    if (found == null) {
+                        Toast.makeText(getContext(), Ui.tr("Trakt didn't answer. Try again in a moment."), Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    String kind = row == MOVIES_ROW ? "movie" : "tv", media = row == MOVIES_ROW ? "movies" : "shows";
+                    List<String[]> list = new ArrayList<>();
+                    list.add(new String[] {"", Ui.tr("Trakt recommendations")});
+                    for (Trakt.UserList l : found) {
+                        if (l.media.isEmpty() || l.media.equals(media)) list.add(new String[] {l.ref, l.name});
+                    }
+                    openChoices(row == MOVIES_ROW ? PICK_MOVIES : PICK_SHOWS, list, Prefs.recsListRef(kind));
+                    if (list.size() == 1) {
+                        Toast.makeText(getContext(), Ui.tr("You have no lists on Trakt yet."), Toast.LENGTH_LONG).show();
+                    }
+                    spoken.focusMoved();
+                });
+            }, "trakt-lists").start();
+        }
+
+        /** A list picked for Movies or Shows: the tab draws from it (Recs fetches again), back on its row. */
+        private void pickList() {
+            String[] choice = choices.get(pickScroll + focus);
+            boolean movies = pickFor == PICK_MOVIES;
+            Prefs.setRecsList(movies ? "movie" : "tv", choice[0], choice[1]);
+            Recs.get(getContext()).refreshIfStale();
+            showSetting(movies ? MOVIES_ROW : SHOWS_ROW);
+        }
+
+        /** Home Settings, the focus on `row`, scrolled so that it shows. */
+        private void showSetting(int row) {
+            screen = HOME_SETTINGS;
+            pickScroll = Math.max(0, row - (SETTINGS_VISIBLE - 1));
+            focus = row - pickScroll;
         }
 
         private void openChoices(int which, List<String[]> list, String now) {
@@ -1071,6 +1141,7 @@ public class SettingsActivity extends Activity {
                 case WEATHER_ROW: Prefs.setWeather(!Prefs.weather()); break;
                 case CITY_ROW: return;
                 case TRAKT_ROW: return;   // OK signs in or out
+                case MOVIES_ROW: case SHOWS_ROW: return;   // OK opens the person's lists
                 case FORECAST_ROW:   // both are in memory: nothing to fetch
                     Prefs.setForecast(Prefs.forecast().equals("days") ? "hours" : "days");
                     return;
@@ -1298,6 +1369,7 @@ public class SettingsActivity extends Activity {
             String title = pickFor == PICK_CITY ? Ui.tr("City")
                     : pickFor == PICK_LANGUAGE ? Ui.tr("Language")
                     : pickFor == PICK_SLEEP ? Ui.tr("Sleep Timer") : pickFor == PICK_PLACE ? Ui.tr("Position")
+                    : pickFor == PICK_MOVIES ? Ui.tr("Movies") : pickFor == PICK_SHOWS ? Ui.tr("Shows")
                     : keyLabels()[pickFor - 1];
             c.drawText(title, LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
             int rows = rowCount();
@@ -1545,9 +1617,9 @@ public class SettingsActivity extends Activity {
                 String[] city = cities.get(pickScroll + focus);
                 Prefs.setCity(city[1], city[2], city[3]);
                 HomeData.get(c).settingsChanged();
-                focus = CITY_ROW;
-                pickScroll = 0;
-                screen = HOME_SETTINGS;
+                showSetting(CITY_ROW);
+            } else if (screen == PICKER && (pickFor == PICK_MOVIES || pickFor == PICK_SHOWS)) {
+                pickList();
             } else if (screen == PICKER && pickFor <= PICK_SLEEP) {
                 pickPower();
             } else if (screen == PICKER && pickFor == PICK_LANGUAGE) {
@@ -1574,6 +1646,9 @@ public class SettingsActivity extends Activity {
                 return;
             } else if (screen == HOME_SETTINGS && pickScroll + focus == PHOTOS_ROW) {
                 askRemovePhotos();
+                return;
+            } else if (screen == HOME_SETTINGS && (pickScroll + focus == MOVIES_ROW || pickScroll + focus == SHOWS_ROW)) {
+                askLists(pickScroll + focus);
                 return;
             } else if (screen == HOME_SETTINGS && pickScroll + focus == TRAKT_ROW) {
                 if (traktIn) {
