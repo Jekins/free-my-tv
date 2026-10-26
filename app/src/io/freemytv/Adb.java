@@ -36,8 +36,8 @@ import javax.crypto.Cipher;
 /**
  * ADB client that talks to the TV itself (127.0.0.1:5555, open while debugging is on). It's what lets the app switch
  * the home screen and the screensaver, and turn off apps, without a computer. The first time, the TV asks
- * "Allow USB debugging?" and you accept with "Always allow". Only HomeMode uses it, and only with its own fixed
- * commands (nothing from outside).
+ * "Allow USB debugging?" and you accept with "Always allow". HomeMode uses it, and the home screen to see the remote's
+ * Settings button in SystemUI's log (SettingsKey), each only with its own fixed commands (nothing from outside).
  * Protocol: https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/protocol.txt
  */
 final class Adb implements Closeable {
@@ -138,6 +138,20 @@ final class Adb implements Closeable {
         }
     }
 
+    /**
+     * A connection with the key the TV already accepted, or null: it never offers one, so the TV never asks (for the
+     * home screen, where a prompt would come out of nowhere).
+     */
+    static Adb known(Context c) {
+        File dir = c.getFilesDir();
+        if (!new File(dir, "adbkey").exists() || !new File(dir, "adbkey.pub").exists()) return null;
+        try {
+            return signedIn(keys(c));
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
     /** A new connection that only signs (it never offers the key, so no second prompt); null while the TV doesn't know it. */
     private static Adb signedIn(KeyPair keys) {
         Socket s = new Socket();
@@ -179,6 +193,33 @@ final class Adb implements Closeable {
                 if (remote == 0 && m.arg0 == 0) throw new IOException(Ui.tr("ADB refused the command"));
                 send(CLSE, local, m.arg0, null);
                 return result.toString("UTF-8");
+            }
+        }
+    }
+
+    interface Lines { void line(String line); }
+
+    /** Runs a command that keeps printing, handing over each line as it comes, until it ends or close() (another thread). */
+    void stream(String command, Lines lines) throws IOException {
+        socket.setSoTimeout(0);
+        int local = nextLocalId++;
+        send(OPEN, local, 0, ("shell:" + command + "\0").getBytes(StandardCharsets.UTF_8));
+        ByteArrayOutputStream line = new ByteArrayOutputStream();
+        while (true) {
+            Message m = read();
+            if (m.arg1 != local) continue;
+            if (m.command == WRTE) {
+                send(OKAY, local, m.arg0, null);
+                for (byte b : m.data) {
+                    if (b == '\n') {
+                        lines.line(line.toString("UTF-8"));
+                        line.reset();
+                    } else if (b != '\r') {
+                        line.write(b);
+                    }
+                }
+            } else if (m.command == CLSE) {
+                return;
             }
         }
     }

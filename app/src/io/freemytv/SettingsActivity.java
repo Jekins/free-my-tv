@@ -679,7 +679,7 @@ public class SettingsActivity extends Activity {
                     return Ui.tr("OK or the arrows change the value.") + "\n\n" + (RemoteKeys.VESTEL ? Ui.tr("YouTube, Prime Video and Google Play: the TV itself controls those buttons.")
                             : RemoteKeys.KTC ? Ui.tr("Netflix, YouTube and Prime Video: the TV itself controls those buttons.")
                             : RemoteKeys.SONY ? Ui.tr("Sony default: the button opens what it always did.")
-                            : RemoteKeys.FORMOVIE || RemoteKeys.JMGO ? Ui.tr("The other buttons: the TV itself controls them.")
+                            : RemoteKeys.FORMOVIE ? Ui.tr("The other buttons: the TV itself controls them.")
                             : RemoteKeys.XIAOMI ? Ui.tr("Xiaomi default: the button opens what it always did.")
                             : RemoteKeys.HISENSE ? Ui.tr("Netflix: the TV itself controls that button.")
                             : RemoteKeys.supported() ? Ui.tr("Disney and Globoplay: the TV itself controls those buttons.")
@@ -1451,7 +1451,6 @@ public class SettingsActivity extends Activity {
         private String[] keyLabels() {
             if (RemoteKeys.HISENSE) return new String[] {Ui.tr("Prime Video button"), Ui.tr("YouTube button"),
                     Ui.tr("Disney+ button"), Ui.tr("All Apps button"), Ui.tr("Settings button"), Ui.tr("Profile button")};
-            if (RemoteKeys.JMGO) return new String[] {Ui.tr("Settings button")};
             if (RemoteKeys.STEM_NETFLIX) return new String[] {Ui.tr("Netflix button")};
             if (RemoteKeys.KTC) return new String[] {Ui.tr("Tabii button")};
             if (RemoteKeys.XIAOMI) return new String[] {Ui.tr("Mi button"), Ui.tr("YouTube button"), Ui.tr("PatchWall button"),

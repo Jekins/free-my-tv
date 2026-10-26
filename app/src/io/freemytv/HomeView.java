@@ -1573,9 +1573,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.offset(0, 18 * k);
         shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f)));
         shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
-        // The magnifier's glass and shadow (drawSearch): white by day, smoked at night, a soft rim; clear, so the
-        // background changing under it doesn't redraw it.
-        scene.clear(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1);
+        // The magnifier's glass and shadow (drawSearch): nearly clear, a hint of white by day and of smoke at night, a
+        // soft rim; clear, so the background changing under it doesn't redraw it.
+        scene.clear(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.18f, 0.08f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1);
     }
 
     /** The quotes row's text and sizes, for one set of coins, prices and text size. */
@@ -2613,10 +2613,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case KeyEvent.KEYCODE_SETTINGS:
             case KeyEvent.KEYCODE_NOTIFICATION:
                 // The remote's Settings button (TCL's sends NOTIFICATION) opens TV Settings, as Hisense's gear does by
-                // default; ours are Home Settings in the drawer. Hisense's and JMGO's gears are Remote Buttons choices
-                // (RemoteKeys): global keys the system would take first.
-                if (RemoteKeys.HISENSE || RemoteKeys.JMGO) return false;
-                if (down && e.getRepeatCount() == 0) HomeApps.open(activity, HomeApps.tvSettings(), this, w / 2, h / 2, 1, 1);
+                // default; ours are Home Settings in the drawer. Hisense's gear is a Remote Buttons choice (RemoteKeys);
+                // where the system takes the key first (Android 14's settings key behavior, JMGO's), it never gets here:
+                // SettingsKey sees it in SystemUI's log.
+                if (RemoteKeys.HISENSE) return false;
+                if (down && e.getRepeatCount() == 0) openTvSettings();
                 return true;
             case KeyEvent.KEYCODE_BACK:
                 if (down) {
@@ -2629,6 +2630,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             default:
                 return false;
         }
+    }
+
+    /** TV Settings, from the middle of the screen: the remote's Settings button (here, or SettingsKey's). */
+    void openTvSettings() {
+        HomeApps.open(activity, HomeApps.tvSettings(), this, w / 2, h / 2, 1, 1);
     }
 
     private void back() {
@@ -2945,6 +2951,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // How dark the picture under the panel is (0 or 1, the night's dark() aside), as Liquid Glass adapts: by day over a
     // dark photo the panel is drawn as at night, its text white. Without the copy, over the plain dim: dark.
     private float menuUnder = 1, shotUnder;
+    private boolean cardOverMenu;   // drawLightCard is drawing the menu's card (drawMenuBack)
     private Scene menuScene;    // the panel's glass, over that copy
     private final Paint shotPaint = new Paint(Paint.FILTER_BITMAP_FLAG), starLine = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Paint menuText, menuHint, menuTitle, menuValue, lEmpty, lBadge;
@@ -3512,7 +3519,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             fill.setColor(0x8C000000);
             c.drawRect(screen, fill);
         }
-        if (menuCardShown()) drawLightCard(c, menuCard);
+        if (menuCardShown()) {
+            cardOverMenu = true;
+            drawLightCard(c, menuCard);
+            cardOverMenu = false;
+        }
     }
 
     /**
@@ -4567,8 +4578,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // The title, unless the logo says it (the details then take its line): cut for its width at rest; while the card
         // changes width, the wide one, clipped to the card.
         float base = top + bh + 46 * k;
-        int titleInk = lCardTitle.getColor();
-        lCardTitle.setColor(Ui.alpha(titleInk, rowA));
+        // Under the menu's card, on its shadow over the dimmed copy, the row's gray is lost: the menu's ink, dark or white.
+        int titleInk = lCardTitle.getColor(), ink = cardOverMenu ? menuTone(L_INK, WHITE) : titleInk;
+        lCardTitle.setColor(Ui.alpha(ink, rowA));
         if (logo == null && (wide > 0.999f || wide < 0.001f)) {
             c.drawText(wide > 0.5f ? t.wideTitle : t.tallTitle, left, base, lCardTitle);
         } else if (logo == null) {
@@ -4582,7 +4594,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (details < 0.01f || (t.meta.isEmpty() && t.rating.isEmpty())) return;
         float metaBase = logo != null ? base : top + bh + 80 * k, x = left;
         int metaColor = lCardMeta.getColor();
-        lCardMeta.setColor(Ui.alpha(metaColor, details));
+        lCardMeta.setColor(Ui.alpha(cardOverMenu ? ink : metaColor, details));
         if (!t.rating.isEmpty()) {
             // The rating: a star in Apple's yellow, then TMDB's average.
             float size = lCardMeta.getTextSize() * 1.1f, starY = metaBase - Ui.halfCap(lCardMeta);
@@ -4676,7 +4688,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             tmp.offset(0, (6 + 8 * f) * k);
             shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f) + tone(0.14f, 0.2f) * f));
             shadows.draw(c, tmp, rad, SHADOW_BLUR * k, shadow);
-            scene.clear(c, cell, rad, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1 - f);
+            scene.clear(c, cell, rad, tone(0xFFFFFFFF, SMOKE), tone(0.18f, 0.08f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1 - f);
             if (f > 0.01f) {
                 fill.setShader(null);
                 fill.setColor(Ui.alpha(0xFFFFFFFF, f));
@@ -5000,7 +5012,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.offset(0, (6 + 8 * f) * k);
         shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f) + tone(0.14f, 0.2f) * f));
         shadows.draw(c, tmp, rr, SHADOW_BLUR * k, shadow);
-        scene.clear(c, cell, rr, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1 - f);
+        scene.clear(c, cell, rr, tone(0xFFFFFFFF, SMOKE), tone(0.18f, 0.08f), tone(0.02f, 0.01f), tone(0.6f, 0.45f), 1 - f);
         if (f > 0.01f) {
             fill.setShader(null);
             fill.setColor(Ui.alpha(0xFFFFFFFF, f));

@@ -21,6 +21,9 @@ public class HomeActivity extends Activity {
     /** The search's voice input (HomeView.startVoice): its answer comes back here. */
     static final int VOICE = 1;
     private HomeView home;
+    private final SettingsKey settingsKey = new SettingsKey(() -> {
+        if (home != null) home.openTvSettings();
+    });
     private int prefsVersion = Prefs.version;   // settings changed while we were away: start over
 
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -59,10 +62,14 @@ public class HomeActivity extends Activity {
             recreate();   // a new language or city: draw everything again
             return;
         }
-        if (home != null) home.resume();
+        if (home != null) {
+            home.resume();
+            settingsKey.start(this);
+        }
     }
 
     @Override protected void onPause() {
+        settingsKey.stop();
         if (home != null) home.pause();
         super.onPause();
     }
