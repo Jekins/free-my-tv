@@ -363,9 +363,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final TextPaint fitPaint = new TextPaint();
     private final RectF gridCell = new RectF();
     private LinearGradient[] tileShaders = new LinearGradient[0];
-    private LinearGradient tileGlow, cardSheen;
+    private LinearGradient tileSheen, cardSheen;
     private float tileShaderH, cardSheenH;
-    // The dock icons' glass rim (drawTileRim): its light by angle, made again only when the icons' size changes.
+    // The dock icons' glass (drawTileGlass): the rim's light by angle and the glare (tileSheen), made again only when
+    // the icons' size changes.
     private final Paint tileRim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private android.graphics.SweepGradient tileRimShader;
     private float tileRimW, tileRimH;
@@ -1777,8 +1778,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /**
      * App icon like the ones in the tvOS 27 Dock: the brand color edge to edge (a soft gradient) with the logo.
-     * Focused: it grows 20% from the center, with a deep shadow (it "rises" toward the viewer) and a subtle glow at the
-     * top. Its edge catches the light as the dock's glass does (drawTileRim).
+     * Focused: it grows 20% from the center, with a deep shadow (it "rises" toward the viewer) and the focused card's
+     * glare. Its edge catches the light as the dock's glass does (drawTileGlass).
      */
     private void drawShelfTile(Canvas c, int i) {
         HomeApps.Item it = shelf.get(i);
@@ -1805,7 +1806,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (tileShaders.length != shelf.size() || tileShaderH != bh) {
                 tileShaders = new LinearGradient[shelf.size()];
                 tileShaderH = bh;
-                tileGlow = new LinearGradient(0, -bh / 2, 0, 0, 0x14FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP);
             }
             if (tileShaders[i] == null) {
                 tileShaders[i] = new LinearGradient(0, -bh / 2, 0, bh / 2, style[0], style[1], Shader.TileMode.CLAMP);
@@ -1817,12 +1817,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             tileFill.setShader(tileShaders[i]);
             tileFill.setAlpha(255);
             c.drawRoundRect(tmp, r0, r0, tileFill);
-            if (fc > 0.01f) {
-                tileFill.setShader(tileGlow);
-                tileFill.setAlpha(Math.round(255 * fc));
-                c.drawRoundRect(tmp, r0, r0, tileFill);
-                tileFill.setAlpha(255);
-            }
             tileFill.setShader(null);
             c.restore();
             drawLogo(c, it, cell, s, style[2]);
@@ -1834,17 +1828,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         } else {
             if (it.tile != null) roundImage(c, it.tile, it.tileShader, cell, r);
         }
-        drawTileRim(c, cx, cy, bw, bh, s, r0, fc);
+        drawTileGlass(c, cx, cy, bw, bh, s, r0, fc);
     }
 
     /**
-     * The icon's rim, as Liquid Glass's edge: the light catches it on the top-left corner and, through the glass, more
-     * softly on the bottom-right one; between them, along the sides, it nearly fades. Brighter focused. Inside the icon's
-     * edge, in its own transform (it grows with it).
+     * The icon as under glass, as the focused card is: focused, the card's glare from its top-left corner over it; and
+     * always its rim, as Liquid Glass's edge: the light catches it on the top-left corner and, through the glass, more
+     * softly on the bottom-right one; between them, along the sides, it nearly fades. Brighter focused. In the icon's
+     * own transform (it grows with it).
      */
-    private void drawTileRim(Canvas c, float cx, float cy, float bw, float bh, float s, float r0, float focus) {
+    private void drawTileGlass(Canvas c, float cx, float cy, float bw, float bh, float s, float r0, float focus) {
         if (tileRimShader == null || tileRimW != bw || tileRimH != bh) {
             tileRimShader = glassLight(bw, bh);
+            tileSheen = glassSheen(bw, bh);
             tileRimW = bw;
             tileRimH = bh;
             tileRim.setStyle(Paint.Style.STROKE);
@@ -1853,6 +1849,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.save();
         c.translate(cx, cy);
         c.scale(s, s);
+        if (focus > 0.01f) {
+            tmp.set(-bw / 2, -bh / 2, bw / 2, bh / 2);
+            tileFill.setShader(tileSheen);
+            tileFill.setAlpha(Math.round(255 * focus));
+            c.drawRoundRect(tmp, r0, r0, tileFill);
+            tileFill.setShader(null);
+            tileFill.setAlpha(255);
+        }
         tmp.set(-bw / 2 + sw / 2, -bh / 2 + sw / 2, bw / 2 - sw / 2, bh / 2 - sw / 2);
         tileRim.setShader(tileRimShader);
         tileRim.setStrokeWidth(sw);
@@ -1866,6 +1870,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * 3 o'clock, clockwise, squeezed to the shape so its corners fall on 45° and 225°: brightest top-left, softer
      * bottom-right, nearly nothing along the sides between.
      */
+    /**
+     * The glare over a focused w × h shape centered on 0, 0 (a card, a dock icon), as if under glass: from its top-left
+     * corner, gone by its bottom's middle.
+     */
+    private static LinearGradient glassSheen(float w, float h) {
+        return new LinearGradient(-w / 2, -h / 2, 0, h / 2, 0x38FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP);
+    }
+
     private static android.graphics.SweepGradient glassLight(float w, float h) {
         android.graphics.SweepGradient g = new android.graphics.SweepGradient(0, 0,
                 new int[] {0x1FFFFFFF, 0x8CFFFFFF, 0x1FFFFFFF, 0x26FFFFFF, 0xF2FFFFFF, 0x4DFFFFFF, 0x1FFFFFFF},
@@ -4238,7 +4250,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float bh = L_CARD_H * k;
         // The focused card's glare and rim (the dock icons' glass edge), made once at the wide card's size (never per
         // frame while it widens).
-        rowSheen = new LinearGradient(-wideW / 2, -bh / 2, 0, bh / 2, 0x38FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP);
+        rowSheen = glassSheen(wideW, bh);
         rowRim = glassLight(wideW, bh);
         star.reset();
         for (int i = 0; i < 10; i++) {   // five points, outer radius 0.5
