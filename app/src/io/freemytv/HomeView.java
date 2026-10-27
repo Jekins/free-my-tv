@@ -365,6 +365,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private LinearGradient[] tileShaders = new LinearGradient[0];
     private LinearGradient tileGlow, cardSheen;
     private float tileShaderH, cardSheenH;
+    // The dock icons' glass rim (drawTileRim): its light by angle, made again only when the icons' size changes.
+    private final Paint tileRim = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private android.graphics.SweepGradient tileRimShader;
+    private float tileRimW, tileRimH;
     private LinearGradient rowSheen, rowRim;
     private final RectF logoRect = new RectF();
     private final Paint starPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -1773,7 +1777,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /**
      * App icon like the ones in the tvOS 27 Dock: the brand color edge to edge (a soft gradient) with the logo.
      * Focused: it grows 20% from the center, with a deep shadow (it "rises" toward the viewer) and a subtle glow at the
-     * top. No border and no reflection, as Apple does it.
+     * top. Its edge catches the light as the dock's glass does (drawTileRim).
      */
     private void drawShelfTile(Canvas c, int i) {
         HomeApps.Item it = shelf.get(i);
@@ -1829,6 +1833,37 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         } else {
             if (it.tile != null) roundImage(c, it.tile, it.tileShader, cell, r);
         }
+        drawTileRim(c, cx, cy, bw, bh, s, r0, fc);
+    }
+
+    /**
+     * The icon's rim, as Liquid Glass's edge: the light catches it on the top-left corner and, through the glass, more
+     * softly on the bottom-right one; between them, along the sides, it nearly fades. Brighter focused. Inside the icon's
+     * edge, in its own transform (it grows with it).
+     */
+    private void drawTileRim(Canvas c, float cx, float cy, float bw, float bh, float s, float r0, float focus) {
+        if (tileRimShader == null || tileRimW != bw || tileRimH != bh) {
+            // By angle from 3 o'clock, clockwise; squeezed to the icon's shape so its corners fall on 45° and 225°.
+            tileRimShader = new android.graphics.SweepGradient(0, 0,
+                    new int[] {0x1FFFFFFF, 0x8CFFFFFF, 0x1FFFFFFF, 0x26FFFFFF, 0xF2FFFFFF, 0x4DFFFFFF, 0x1FFFFFFF},
+                    new float[] {0, 0.125f, 0.25f, 0.5f, 0.625f, 0.75f, 1});
+            android.graphics.Matrix m = new android.graphics.Matrix();
+            m.setScale(1, bh / bw);
+            tileRimShader.setLocalMatrix(m);
+            tileRimW = bw;
+            tileRimH = bh;
+            tileRim.setStyle(Paint.Style.STROKE);
+        }
+        float sw = 2.5f * k;
+        c.save();
+        c.translate(cx, cy);
+        c.scale(s, s);
+        tmp.set(-bw / 2 + sw / 2, -bh / 2 + sw / 2, bw / 2 - sw / 2, bh / 2 - sw / 2);
+        tileRim.setShader(tileRimShader);
+        tileRim.setStrokeWidth(sw);
+        tileRim.setAlpha(Math.round(255 * (0.75f + 0.25f * focus)));
+        c.drawRoundRect(tmp, r0 - sw / 2, r0 - sw / 2, tileRim);
+        c.restore();
     }
 
     /**
