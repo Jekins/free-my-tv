@@ -237,7 +237,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Path star = new Path();   // the rating's star, 1 unit across, drawn scaled
     private final Runnable focusBackground = this::backgroundFromFocus;
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
-    private Paint lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip, lDate, lClock, lWeather, lClockQuote;
+    private Paint lTab, lTabOn, lCardMeta, lQuote, lTip, lDate, lClock, lWeather, lClockQuote;
     private TextPaint lCaption;
     private Shader lightGradient;
 
@@ -392,9 +392,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean textDays;   // the weather card shows the next days (Home Settings → Forecast) and has them
     private final String[] priceText = new String[HomeData.COINS.length], changeText = new String[HomeData.COINS.length];
 
-    /** A card's words, cut to fit once (never while drawing): its title at both widths and the wide card's details. */
+    /** A card's words, cut to fit once (never while drawing): the wide card's details and the new episodes' badge. */
     private static final class CardText {
-        String key = "", tallTitle = "", wideTitle = "", meta = "", rating = "", badge = "";
+        String key = "", meta = "", rating = "", badge = "";
         int generation = -1;
         float width, ratingW;   // ratingW: the star, the number and the space after them (0 without a rating)
         float badgeW;           // the new episodes' words, at most a tall card's room
@@ -736,8 +736,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float kk = width / 1920f;
         measure(sky, width, height);
         measure(skyImages, Backdrop.GW, Backdrop.GH);
-        // Down to where the focused card's light ends (drawAmbient, ~800): shorter, it was cut there in a straight line.
-        measure(heroLayer, width, Math.round(820 * kk));
+        // Down to where the focused card's light ends (drawAmbient, ~832): shorter, it was cut there in a straight line.
+        measure(heroLayer, width, Math.round(850 * kk));
         measure(status, Math.round(1160 * kk), Math.round(240 * kk));
         // Sized to what they draw (the glass and its shadow; the grown tiles and their shadows): smaller layers are
         // cheaper for the GPU to composite on every frame of the drawer animation.
@@ -828,8 +828,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (Paint p : new Paint[] {labelPaint, titlePaint, metaPaint, clockPaint}) p.setShadowLayer(22 * k, 0, 2 * k, 0x59000000);
         lTab = Ui.text(Ui.medium, 30 * k, L_DIM);
         lTabOn = Ui.text(Ui.semibold, 30 * k, L_INK);
-        lCardTitle = Ui.text(Ui.semibold, 31 * k, L_INK);
-        lCardTitle.setLetterSpacing(0.012f);
         lCardMeta = Ui.text(Ui.medium, 25 * k, L_DIM);
         starPaint.setPathEffect(new android.graphics.CornerPathEffect(0.08f));   // rounded points, like SF Symbols' star
         starLine.setStyle(Paint.Style.STROKE);
@@ -1203,7 +1201,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         pickIndex = next;
         heroSlide = dir;
         refreshHero(true);
-        Backdrop b = recs.backdrop(currentPick());
+        Backdrop b = recs.whole(currentPick(), true);
         if (b != null) showBackdrop(b);
         spoken.focusMoved();
         return true;
@@ -1352,8 +1350,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lTab.setColor(tone(L_DIM, 0xFF8E8E93));
         lEmpty.setColor(tone(L_DIM, 0xFF8E8E93));
         lTabOn.setColor(tone(L_INK, WHITE));
-        lCardTitle.setColor(tone(L_INK, WHITE));
-        lCardMeta.setColor(tone(L_DIM, 0xFF98989D));
+        // The details under a card: white at night, over the focused card's light (gray, or translucent, looked dull).
+        lCardMeta.setColor(tone(L_INK, 0xFFFFFFFF));
         lQuote.setColor(tone(L_FAINT, 0xB8FFFFFF));
         lTip.setColor(tone(L_INK, WHITE));
         lDate.setColor(tone(L_DIM, 0xFF98989D));
@@ -3638,11 +3636,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         aboutLine = "";
         aboutLayout = null;
         if (p == null || aboutTitle == null) return;
-        Backdrop b = recs.ready(p);
-        boolean logo = b != null && b.card != null && b.logo != null;   // else the card writes its title (drawLightCard)
         String title = p.title == null ? "" : p.title.trim(), about = p.about == null ? "" : p.about;
-        if (logo) aboutLine = TextUtils.ellipsize(title, aboutTitle, wideW, TextUtils.TruncateAt.END).toString();
-        float metaBase = (L_CARDS_TOP + L_CARD_H + (logo ? 46 : 80)) * k;
+        // The title in words: the cards never write it (a logo, when there is one, is on the photo).
+        aboutLine = TextUtils.ellipsize(title, aboutTitle, wideW, TextUtils.TruncateAt.END).toString();
+        float metaBase = (L_CARDS_TOP + L_CARD_H + 46) * k;
         aboutTitleBase = metaBase + 58 * k;
         aboutTop = aboutLine.isEmpty() ? metaBase + 22 * k : aboutTitleBase + 18 * k;
         if (about.isEmpty()) return;
@@ -3673,9 +3670,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         Recs.Pick p = menuPick;
         CardText t = menuCard < cardWords.length ? cardWords[menuCard] : null;
         if (p == null || t == null) return;
-        Backdrop b = recs.ready(p);
-        boolean logo = b != null && b.card != null && b.logo != null;
-        float left = cardX[menuCard], bottom = (L_CARDS_TOP + L_CARD_H) * k, metaBase = bottom + (logo ? 46 : 80) * k;
+        float left = cardX[menuCard], bottom = (L_CARDS_TOP + L_CARD_H) * k, metaBase = bottom + 46 * k;
         int ink = menuTone(L_INK, WHITE);
         String age = p.age == null ? "" : p.age;
         if (!age.isEmpty()) {
@@ -4302,11 +4297,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         rowReset = false;
         if (n != slots || reset) setSlots(n, reset);
         long now = SystemClock.uptimeMillis();
+        preload();
         for (int i = 0; i < cards.size(); i++) {
             Recs.Pick p = cards.get(i);
             cutText(i, p);
-            // Only the cards around the focus load their images (the others, when the row gets to them).
-            Backdrop b = i >= cardIndex - 1 && i <= cardIndex + 4 ? recs.backdrop(p) : recs.ready(p);
+            // Only the cards around the focus load their images (the others, when the row gets to them): three back, so the
+            // ones coming in from the left are ready too.
+            Backdrop b = i >= cardIndex - 3 && i <= cardIndex + 4 ? recs.backdrop(p) : recs.ready(p);
             if (b == null) {
                 imageAt[i] = 0;
             } else if (imageAt[i] == 0) {
@@ -4348,15 +4345,43 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** The focused card's backdrop when it's ready, else the one showing now (an empty card has none). */
     private Backdrop focusedBackdrop() {
         if (cards.isEmpty()) return null;
-        Backdrop b = recs.ready(cards.get(Math.min(cardIndex, cards.size() - 1)));
+        Backdrop b = recs.whole(cards.get(Math.min(cardIndex, cards.size() - 1)), false);
         return b != null ? b : bgTo;
     }
 
     /** The focused card's photo becomes the background, fading in (from the main loop, after the key that moved it). */
     private void backgroundFromFocus() {
         if (!running || !picksOn() || cardIndex >= cards.size()) return;
-        Backdrop b = recs.backdrop(cards.get(cardIndex));
+        Backdrop b = recs.whole(cards.get(cardIndex), false);
+        handler.removeCallbacks(wholeSoon);
         if (b != null) showBackdrop(b);
+        else handler.postDelayed(wholeSoon, 600);
+        preload();
+    }
+
+    /**
+     * The focused card kept only its card's part (scrolled past before): its background is built again once the focus
+     * stays 0.6 s (passing over twenty such cards queued twenty builds, 0.45 s each); Recs notifies, and it fades in.
+     */
+    private final Runnable wholeSoon = this::focusedWhole;
+
+    private void focusedWhole() {
+        if (running && picksOn() && cardIndex < cards.size()) recs.whole(cards.get(cardIndex), true);
+    }
+
+    /**
+     * Around the focus, three cards back and four on, the images load before they come into view (nearest first), and
+     * keep their whole backdrops (the next background is one of them). On every move: drawn only once on screen, the card
+     * coming in at the left edge was gray until its photo came.
+     */
+    private void preload() {
+        if (cards.isEmpty()) return;
+        int at = Math.min(cardIndex, cards.size() - 1);
+        recs.keepWhole(cards.subList(Math.max(0, at - 3), Math.min(cards.size(), at + 5)));
+        for (int d = 0; d <= 4; d++) {
+            if (at + d < cards.size()) recs.backdrop(cards.get(at + d));
+            if (d > 0 && d <= 3 && at - d >= 0) recs.backdrop(cards.get(at - d));
+        }
     }
 
     /** Springs, places and words for `n` slots; `reset` puts the row at rest at once (another tab, a new list). */
@@ -4403,10 +4428,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         t.key = key;
         t.generation = Ui.generation;
         t.width = wideW;
-        String title = p.title == null ? "" : p.title.trim();
-        fitPaint.set(lCardTitle);
-        t.tallTitle = TextUtils.ellipsize(title, fitPaint, tallW, TextUtils.TruncateAt.END).toString();
-        t.wideTitle = TextUtils.ellipsize(title, fitPaint, wideW, TextUtils.TruncateAt.END).toString();
         t.rating = p.rating > 0 ? String.format(Ui.locale(), "%.1f", p.rating) : "";
         fitPaint.set(lCardMeta);
         t.ratingW = t.rating.isEmpty() ? 0 : lCardMeta.getTextSize() * 1.1f + fitPaint.measureText(t.rating) + 22 * k;
@@ -4632,10 +4653,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             }
             x0 = next;
         }
+        // The lit cards' light first, under every card: it shows around them, never over a neighbor's photo.
         for (int i = 0; i < slots; i++) {
-            if (i != top && cardX[i] + cardW[i] > -reach && cardX[i] < w + reach) drawLightCard(c, i);
+            if (cardGlow.get(i).value > 0.004f && cardX[i] + cardW[i] > -reach && cardX[i] < w + reach) {
+                drawLightCard(c, i, true, false);
+            }
         }
-        if (top >= 0) drawLightCard(c, top);
+        for (int i = 0; i < slots; i++) {
+            if (i != top && cardX[i] + cardW[i] > -reach && cardX[i] < w + reach) drawLightCard(c, i, false, true);
+        }
+        if (top >= 0) drawLightCard(c, top, false, true);
         c.restore();
         if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
     }
@@ -4691,11 +4718,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * Recommendation card: the title's photo (its center at the card's width this frame, from one image big enough for
      * the wide card focused, so it stays sharp and a card that widens keeps the same picture), rounded corners and a
      * soft shadow; when focused, it grows 5%, rises and lights up its border, and while its width is stretched past its
-     * size it is a little thinner, like jelly. On it, the title's logo when TMDB has one (drawLogo); else, below it, the
-     * title. As the card widens, the rating and year · genre · runtime fade in below. An empty card (its title still being
-     * looked up) pulses softly.
+     * size it is a little thinner, like jelly. On it, the title's logo when TMDB has one (drawLogo). As the card widens,
+     * the rating and year · genre · runtime fade in below it. An empty card (its title still being looked up) pulses
+     * softly.
      */
     private void drawLightCard(Canvas c, int i) {
+        drawLightCard(c, i, true, true);
+    }
+
+    /** `light`: only its light around it (drawAmbient); `body`: all the rest. */
+    private void drawLightCard(Canvas c, int i, boolean light, boolean body) {
         Recs.Pick p = i < cards.size() ? cards.get(i) : null;
         float v = cardFocus.get(i).value, f = Ui.clamp(v), s = 1 + 0.05f * v;
         float left = cardX[i], bw = cardW[i], bh = L_CARD_H * k, r0 = CARD_R * k, top = L_CARDS_TOP * k;
@@ -4710,22 +4742,25 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float shown = b == null || b.card == null ? 0 : imageAt[i] <= 1 ? 1 : Ui.clamp((up - imageAt[i]) / (float) IMAGE_FADE_MS);
         // Focused, it shines with its photo's colors (drawAmbient) in place of its shadow: lit, a card casts none, and
         // this TV's GPU fills one soft edge for it, not two. The shadow is gone by the time the light is a third on (both
-        // at once, on the card coming and the one going, cost the row a late frame in eight).
+        // at once, on the card coming and the one going, cost the row a late frame in eight). Focus deepens and lowers the
+        // shadow only a little: while the photo loads the card has it, and a hard one made the card sink when the light
+        // took its place.
         float g = b == null || b.ambient == null ? 0 : Ui.clamp(cardGlow.get(i).value) * shown;
-        float shade = (tone(0.14f, 0.32f) + tone(0.2f, 0.28f) * f) * Math.max(0, 1 - g / 0.35f) * rowA;
+        if (light && g > 0.004f) drawAmbient(c, b, r, g * rowA);
+        if (!body) return;
+        float shade = (tone(0.14f, 0.32f) + tone(0.08f, 0.1f) * f) * Math.max(0, 1 - g / 0.35f) * rowA;
         if (shade > 0.004f) {
             c.save();
             c.translate(cx, cy);
             c.scale(s, s);
             tmp.set(-bw / 2, -ch / 2, bw / 2, ch / 2);
-            tmp.offset(0, (10 + 14 * f) * k);
+            tmp.offset(0, (10 + 6 * f) * k);
             shadowDeep.setColor(Ui.alpha(0xFF000000, shade));
             // A card with a title is opaque (its photo, or its color until the photo comes): its shadow's middle, which
             // it covers, isn't drawn (with the taller cards, the row went from 58 to 57 frames a second without this).
             shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep, p != null);
             c.restore();
         }
-        if (g > 0.004f) drawAmbient(c, b, r, g * rowA);
         if (shown < 1) {
             // No photo yet: the card's color; an empty card breathes until its title comes.
             float pulse = p != null ? 1 : 0.75f + 0.25f * (float) Math.cos(up * (2 * Math.PI / 1400));
@@ -4764,28 +4799,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         CardText t = p == null ? null : cardWords[i];
         if (t == null) return;
-        // The title, unless the logo says it (the details then take its line): cut for its width at rest; while the card
-        // changes width, the wide one, clipped to the card.
-        float base = top + bh + 46 * k;
-        // Under the menu's card, on its shadow over the dimmed copy, the row's gray is lost: the menu's ink, dark or white.
-        int titleInk = lCardTitle.getColor(), ink = cardOverMenu ? menuTone(L_INK, WHITE) : titleInk;
-        lCardTitle.setColor(Ui.alpha(ink, rowA));
-        if (logo == null) underShadow(lCardTitle, g * rowA);
-        if (logo == null && (wide > 0.999f || wide < 0.001f)) {
-            c.drawText(wide > 0.5f ? t.wideTitle : t.tallTitle, left, base, lCardTitle);
-        } else if (logo == null) {
-            c.save();
-            c.clipRect(left, base - lCardTitle.getTextSize() * 1.2f, left + bw, base + lCardTitle.getTextSize() * 0.4f);
-            c.drawText(t.wideTitle, left, base, lCardTitle);
-            c.restore();
-        }
-        lCardTitle.clearShadowLayer();
-        lCardTitle.setColor(titleInk);
+        // No title under the card (its logo says it, and the menu in words): the details always have the same line (under
+        // a title that went when the logo came, they jumped up).
         float details = smoothstep(0.55f, 1, wide) * rowA;
         if (details < 0.01f || (t.meta.isEmpty() && t.rating.isEmpty())) return;
-        float metaBase = logo != null ? base : top + bh + 80 * k, x = left;
+        float metaBase = top + bh + 46 * k, x = left;
         int metaColor = lCardMeta.getColor();
-        lCardMeta.setColor(Ui.alpha(cardOverMenu ? ink : metaColor, details));
+        // Under the menu's card, on its shadow over the dimmed copy, the row's ink is lost: the menu's, dark or white.
+        lCardMeta.setColor(Ui.alpha(cardOverMenu ? menuTone(L_INK, WHITE) : metaColor, details));
         underShadow(lCardMeta, g * details);
         if (!t.rating.isEmpty()) {
             // The rating: a star in Apple's yellow, then TMDB's average.
@@ -4827,7 +4848,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      */
     private void drawAmbient(Canvas c, Backdrop b, float r, float g) {
         int pad = Backdrop.AMBIENT_PAD, reach = Backdrop.AMBIENT_REACH;
-        float grow = (-24 + 32 * g) * k, drop = 8 * g * k;
+        float grow = (-24 + 38 * g) * k, drop = 14 * g * k;
         float sx = (cell.width() + 2 * grow) / Backdrop.AMBIENT_W, sy = (cell.height() + 2 * grow) / Backdrop.AMBIENT_H;
         float x0 = cell.left - grow - pad * sx, y0 = cell.top - grow + drop - pad * sy;
         // In the bitmap's pixels: where the light ends (the blur's reach past the photo), the card, and its corners.

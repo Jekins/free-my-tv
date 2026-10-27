@@ -34,9 +34,11 @@ final class Backdrop {
     static final int LOGO_W = ui(460), LOGO_H = ui(127);
     /**
      * The focused card's light (ambient()): the photo this small, in clear margins of AMBIENT_PAD; its blur (three box
-     * passes of AMBIENT_BLUR) reaches exactly AMBIENT_REACH past the photo's edges, and past that it's clear.
+     * passes of AMBIENT_BLUR) reaches exactly AMBIENT_REACH past the photo's edges, and past that it's clear. Then it is
+     * made AMBIENT_DENSE times as opaque and AMBIENT_BRIGHT times as bright, to read as light.
      */
-    static final int AMBIENT_W = 160, AMBIENT_H = 90, AMBIENT_PAD = 16, AMBIENT_BLUR = 4, AMBIENT_REACH = 3 * AMBIENT_BLUR;
+    static final int AMBIENT_W = 160, AMBIENT_H = 90, AMBIENT_PAD = 20, AMBIENT_BLUR = 5, AMBIENT_REACH = 3 * AMBIENT_BLUR;
+    private static final float AMBIENT_DENSE = 1.35f, AMBIENT_BRIGHT = 1.12f;
 
     private static float uiScale() {
         android.util.DisplayMetrics m = android.content.res.Resources.getSystem().getDisplayMetrics();
@@ -81,6 +83,18 @@ final class Backdrop {
         this.nightGlass = nightGlass;
         lightImage = lightBg == null ? null : Bitmap.createBitmap(lightBg, bw, bh, Bitmap.Config.ARGB_8888);
         nightImage = nightBg == null ? null : Bitmap.createBitmap(nightBg, bw, bh, Bitmap.Config.ARGB_8888);
+    }
+
+    /** Only what a card draws (its photo, logo and light), without the background's versions: one scrolled past. */
+    Backdrop cardOnly() {
+        Backdrop b = new Backdrop(null, null, null, card, ambient, null, null, null, null);
+        b.logo = logo;
+        return b;
+    }
+
+    /** False for cardOnly(): it can't be the background. */
+    boolean whole() {
+        return image != null || lightImage != null;
     }
 
     static Backdrop make(Bitmap src, boolean forLight) {
@@ -247,12 +261,12 @@ final class Backdrop {
             boxPremultiplied(px, tmp, w, h, AMBIENT_BLUR, true);
             boxPremultiplied(tmp, px, w, h, AMBIENT_BLUR, false);
         }
-        for (int i = 0; i < px.length; i++) {   // Bitmap.createBitmap takes the colors unpremultiplied
+        for (int i = 0; i < px.length; i++) {   // unpremultiplied (Bitmap.createBitmap takes them so), denser, brighter
             int a = px[i] >>> 24;
-            if (a == 0 || a == 255) continue;
-            float u = 255f / a;
-            px[i] = a << 24 | clamp(((px[i] >> 16) & 255) * u) << 16 | clamp(((px[i] >> 8) & 255) * u) << 8
-                    | clamp((px[i] & 255) * u);
+            if (a == 0) continue;
+            float u = 255f / a * AMBIENT_BRIGHT;
+            px[i] = clamp(a * AMBIENT_DENSE) << 24 | clamp(((px[i] >> 16) & 255) * u) << 16
+                    | clamp(((px[i] >> 8) & 255) * u) << 8 | clamp((px[i] & 255) * u);
         }
         return gpu(Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888));
     }
