@@ -369,7 +369,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Paint tileRim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private android.graphics.SweepGradient tileRimShader;
     private float tileRimW, tileRimH;
-    private LinearGradient rowSheen, rowRim;
+    private LinearGradient rowSheen;
+    private android.graphics.SweepGradient rowRim;
     private final RectF logoRect = new RectF();
     private final Paint starPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private android.graphics.ColorFilter veilFilter;
@@ -1843,13 +1844,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      */
     private void drawTileRim(Canvas c, float cx, float cy, float bw, float bh, float s, float r0, float focus) {
         if (tileRimShader == null || tileRimW != bw || tileRimH != bh) {
-            // By angle from 3 o'clock, clockwise; squeezed to the icon's shape so its corners fall on 45° and 225°.
-            tileRimShader = new android.graphics.SweepGradient(0, 0,
-                    new int[] {0x1FFFFFFF, 0x8CFFFFFF, 0x1FFFFFFF, 0x26FFFFFF, 0xF2FFFFFF, 0x4DFFFFFF, 0x1FFFFFFF},
-                    new float[] {0, 0.125f, 0.25f, 0.5f, 0.625f, 0.75f, 1});
-            android.graphics.Matrix m = new android.graphics.Matrix();
-            m.setScale(1, bh / bw);
-            tileRimShader.setLocalMatrix(m);
+            tileRimShader = glassLight(bw, bh);
             tileRimW = bw;
             tileRimH = bh;
             tileRim.setStyle(Paint.Style.STROKE);
@@ -1864,6 +1859,21 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tileRim.setAlpha(Math.round(255 * (0.75f + 0.25f * focus)));
         c.drawRoundRect(tmp, r0 - sw / 2, r0 - sw / 2, tileRim);
         c.restore();
+    }
+
+    /**
+     * A glass edge's light for a w × h shape centered on 0, 0 (the dock's icons, the focused card): by angle from
+     * 3 o'clock, clockwise, squeezed to the shape so its corners fall on 45° and 225°: brightest top-left, softer
+     * bottom-right, nearly nothing along the sides between.
+     */
+    private static android.graphics.SweepGradient glassLight(float w, float h) {
+        android.graphics.SweepGradient g = new android.graphics.SweepGradient(0, 0,
+                new int[] {0x1FFFFFFF, 0x8CFFFFFF, 0x1FFFFFFF, 0x26FFFFFF, 0xF2FFFFFF, 0x4DFFFFFF, 0x1FFFFFFF},
+                new float[] {0, 0.125f, 0.25f, 0.5f, 0.625f, 0.75f, 1});
+        android.graphics.Matrix m = new android.graphics.Matrix();
+        m.setScale(1, h / w);
+        g.setLocalMatrix(m);
+        return g;
     }
 
     /**
@@ -4226,9 +4236,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tallW = L_TALL_W * k;
         wideW = (CONTENT_R - MARGIN) * k - 2 * tallW - 2 * cardGap;
         float bh = L_CARD_H * k;
-        // The focused card's glare and rim, made once at the wide card's size (never per frame while it widens).
+        // The focused card's glare and rim (the dock icons' glass edge), made once at the wide card's size (never per
+        // frame while it widens).
         rowSheen = new LinearGradient(-wideW / 2, -bh / 2, 0, bh / 2, 0x38FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP);
-        rowRim = new LinearGradient(0, -bh / 2, 0, bh / 2, 0xE6FFFFFF, 0x59FFFFFF, Shader.TileMode.CLAMP);
+        rowRim = glassLight(wideW, bh);
         star.reset();
         for (int i = 0; i < 10; i++) {   // five points, outer radius 0.5
             double a = -Math.PI / 2 + i * Math.PI / 5;
@@ -4708,10 +4719,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             sheen.setAlpha(alpha);
             c.drawRoundRect(tmp, r0, r0, sheen);
             sheen.setAlpha(255);
+            float sw = 2.5f * k / s;   // inside the edge, as on the dock's icons
+            tmp.inset(sw / 2, sw / 2);
             rim.setShader(rowRim);
             rim.setAlpha(alpha);
-            rim.setStrokeWidth(2.5f * k / s);
-            c.drawRoundRect(tmp, r0, r0, rim);
+            rim.setStrokeWidth(sw);
+            c.drawRoundRect(tmp, r0 - sw / 2, r0 - sw / 2, rim);
             rim.setStrokeWidth(2.5f * k);
             rim.setAlpha(255);
             c.restore();
