@@ -564,6 +564,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         wallpaper.setListener(this);
         data.refreshIfStale();
         recs.refreshIfStale();
+        recs.fill();
         onWallpaper();   // the theme or your photos may have changed in Home Settings
         Photos.importInbox(getContext(), ownReady);   // photos a computer just sent
         if (tvInputs != null) tvInputs.registerCallback(inputCallback, handler);
