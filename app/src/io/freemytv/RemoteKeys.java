@@ -39,6 +39,8 @@ final class RemoteKeys {
      */
     static final boolean TCL = is("TCL"), VESTEL = is("Vestel"), KTC = is("KTC"), SONY = is("Sony"), FORMOVIE = is("Formovie"),
             HISENSE = is("Hisense");
+    /** JMGO's projectors: not a Remote Buttons brand (the system takes their Settings button first; see SettingsKey). */
+    static final boolean JMGO = is("JMGO");
     /**
      * Xiaomi TVs (models MiTV-M…; MiTV-MSSP3, MediaTek, Android TV 9 tested). Not the Mi Box or Mi TV Stick, the slowest
      * devices we run on, whose remotes have a Home button; Formovie's Xiaomi projectors have their own remote.

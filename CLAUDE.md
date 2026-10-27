@@ -302,6 +302,15 @@ entries; its system pieces are in `PROTECTED`. USB debugging opens ADB on 5555 t
   button has nothing to open without `launcherx`. Hisense keeps only error logs: `adb shell setprop log.tag.FreeMyTV I`
   before reading `adb logcat -s FreeMyTV`.
   `adb shell input keyevent` doesn't test any of these: injected keys skip the accessibility key filter.
+- The Settings button where Android 14 answers it itself (`dumpsys window policy`:
+  `mSettingsKeyBehavior=SETTINGS_KEY_BEHAVIOR_NOTIFICATION_PANEL`): PhoneWindowManager takes it before any app and before
+  the key filter (it never reaches `RemoteKeyService`), and asks SystemUI for the notification handler's panel, Google
+  TV's side panel in `launcherx`, which Free My TV mode turns off: nothing opens, and SystemUI logs
+  `TvNotificationPanel: Not launching notification handler activity` once a press. `SettingsKey` streams that line from
+  `logcat` over the app's own ADB (`Adb.known`: only a key the TV already accepted, never a prompt) while the home
+  screen is resumed, and opens TV Settings. Seen on a JMGO projector (K93A, MediaTek, Google TV 14: its gear is HID
+  `0x0C00BE`, `BTN_MISC`), and only there (`SettingsKey.ON`). Long-press Home asks for the same panel. Injected
+  `KEYCODE_SETTINGS` takes the same path, so `adb shell input keyevent KEYCODE_SETTINGS` does test it.
 - What's playing (`NowPlaying`) comes from the apps' media sessions, which Android hands only to an allowed notification
   listener. A listener could read every notification, so ours follows Home Settings' *Now Playing widget* (off by
   default): turning it on allows it through ADB (`HomeMode.nowPlayingAccess`, `cmd notification allow_listener`; the

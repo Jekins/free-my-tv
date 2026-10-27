@@ -439,6 +439,8 @@ final class Recs {
     private volatile List<Pick> picks = new ArrayList<>();
     /** Filmix: the titles not looked up yet, in Trakt's (or TMDB's) order; picks takes them as the rows need them. */
     private final List<Pick> queue = new ArrayList<>();
+    /** The queue's title being looked up now (out of the queue, not yet in picks), by key; under the queue's lock. */
+    private String checking;
     /** How many cards each row (Explore, Movies, Shows) shows; reaching the last one adds PAGE. Main thread. */
     private final int[] shown = {FIRST, FIRST, FIRST, FIRST};
     private final boolean[] loadingMore = new boolean[4];
@@ -620,7 +622,7 @@ final class Recs {
 
     /**
      * The confirmed titles a row draws from: the recommendations in order, or the row's own (a filtered row's, the
-     * watchlist's) in their order.
+     * watchlist's) in their order, up to the first one still waiting to be looked up.
      */
     private List<Pick> order(String kind) {
         List<Pick> all = picks;
@@ -633,11 +635,25 @@ final class Recs {
         }
         Map<String, Pick> byKey = new HashMap<>();
         for (Pick p : all) byKey.put(key(p), p);
+        Set<String> waiting;
+        synchronized (queue) {
+            waiting = keys(queue);
+            if (checking != null) waiting.add(checking);
+        }
         List<Pick> out = new ArrayList<>();
         for (String k : keys) {
             Pick p = byKey.get(k);
             if (p != null) out.add(p);
+            // The ones after it wait too, even if another row confirmed them: looked up, it would land before them
+            // (the row's cards shifting under the focus), not at the row's end.
+            else if (waiting.contains(k)) break;
         }
+        return out;
+    }
+
+    private static Set<String> keys(List<Pick> list) {
+        Set<String> out = new HashSet<>();
+        for (Pick p : list) out.add(key(p));
         return out;
     }
 
@@ -852,6 +868,15 @@ final class Recs {
         });
     }
 
+    /**
+     * Main thread, as the home screen shows: a row with fewer cards than it shows (its next title still waits to be
+     * looked up) gets them now, not only once the focus reaches its end. A lookup that fails waits for the next time.
+     */
+    void fill() {
+        if (fetching || !hasKey(context) || (FILMIX_ONLY && !filmixCurrent())) return;
+        for (String kind : new String[] {null, "movie", "tv", WATCHLIST}) refill(kind);
+    }
+
     /** Main thread: a row with fewer cards than it shows looks its next titles up, if it has any left. */
     private void refill(String kind) {
         if (count(kind) < shown[row(kind)] && queued(kind)) lookUp(kind);
@@ -1014,6 +1039,7 @@ final class Recs {
         Pick next;
         synchronized (queue) {
             next = next(queue, kind, true);
+            if (next != null) checking = key(next);   // the rows still wait for it
         }
         if (next != null) {
             try {
@@ -1031,6 +1057,10 @@ final class Recs {
                 }
                 failed = true;
                 AppLog.w("Filmix: " + e.getMessage());
+            } finally {
+                synchronized (queue) {
+                    checking = null;
+                }
             }
             save();
             writeStatus();   // the settings count what is ready and what still waits
@@ -1049,12 +1079,23 @@ final class Recs {
         });
     }
 
-    /** How many of `list` the row would show (a filtered row, the watchlist: its own titles). */
-    private int count(List<Pick> list, String kind) {
+    /**
+     * How many of `list` the row would show while `rest` waits to be looked up (a filtered row, the watchlist: its own
+     * titles, up to the first one waiting, as `order`).
+     */
+    private int count(List<Pick> list, List<Pick> rest, String kind) {
         List<String> keys = rowTitles.get(titlesKey(kind));
         if (keys == null && ownTitles(kind)) return 0;
         int n = 0;
-        for (Pick p : list) if (inRow(p, kind, keys)) n++;
+        if (keys == null) {
+            for (Pick p : list) if (inRow(p, kind, null)) n++;
+            return n;
+        }
+        Set<String> have = keys(list), waiting = keys(rest);
+        for (String k : keys) {
+            if (have.contains(k)) n++;
+            else if (waiting.contains(k)) break;
+        }
         return n;
     }
 
@@ -1614,7 +1655,7 @@ final class Recs {
         List<Pick> rest = new ArrayList<>(candidates), confirmed = new ArrayList<>();
         int checked = 0;
         for (String kind : new String[] {null, "movie", "tv", WATCHLIST}) {
-            while (count(confirmed, kind) < FIRST) {
+            while (count(confirmed, rest, kind) < FIRST) {
                 Pick next = next(rest, kind, true);
                 if (next == null) break;
                 checked++;

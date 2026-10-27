@@ -200,19 +200,20 @@ movie's year or the day a show's last episode aired. Where TMDB has the title's 
 English), it is on the card's photo instead of the title below it, as on Apple TV: centered on a tall card, at the
 bottom left of the wide one.
 
-Holding OK on a card opens its menu, with the card moved to the row's left end and the menu beside it: *Watch trailer*
+Holding OK on a card (or the remote's menu key, ≡) opens its menu, with the card moved to the row's left end and the menu beside it: *Watch trailer*
 searches YouTube for the title's trailer in the TV's language; *Watched* adds it to your Trakt history, and the item then
 turns into ten stars to rate it (Trakt's own 1 to 10, with Trakt's word for each: 8 is *Great*), sent once, a moment
 after the last press; *Add to Watchlist* puts it on your Trakt watchlist (or *Remove from Watchlist* takes it off);
 *Don't recommend* takes it off the row and off your Trakt recommendations (Trakt's hidden list, which trakt.tv can
-undo).
+undo). Like Liquid Glass, the menu and the filters take their look from what is under them: by day over a dark photo
+they are drawn as at night (smoked glass, white text); over a light one, as frosted white glass.
 
 The Watchlist tab, after Shows, has your Trakt watchlist, the latest added first, and before it the shows you watch with
 episodes out since you last watched (the last 20 shows you watched, an episode from the past year): their card says how
 many you haven't seen. It follows Trakt every half hour. All of it shows, Filmix's or not: a title Filmix hasn't says so
 on its card, as in the search.
 
-↑ on the Explore tab (a chevron over it says so), or OK held there, opens its filters, as Trakt's smart lists have
+↑ on the Explore tab (a chevron over it says so), OK held there, or ≡, opens its filters, as Trakt's smart lists have
 them: on the left their sections, each saying what it's set to, then *Reset* and *Show* as buttons; on the right every
 option of the focused one at once, in even columns. Type (movies, shows or both: Trakt has no cartoon or anime type, so
 animation and anime are genres); sort (your recommendations, or Trakt's trending, popular or anticipated titles); genres,
@@ -273,6 +274,7 @@ To remove it for good, switch to *Original* first, then uninstall *Free My TV* (
   - on KTC-made TVs (NextStar), Anoki's screen-content recognition (ACR), the store demo and the manual;
   - Google Assistant, only with `disable_assistant=true`.
 - On Google TV, the Assistant's results for films and shows come from Google TV's home app, which is off in Free My TV mode: asking it to play a show can end in "Sorry, I don't understand", and a search can show only YouTube videos. Opening apps, questions and apps' own voice search (YouTube's, for one) still work; *Original* brings it all back.
+- On JMGO projectors, the remote's Settings button (the gear) asked for Google TV's side panel, which is its home screen's, so nothing opened: on Free My TV's home screen it opens TV Settings.
 - On TCL TVs, the remote's Netflix, YouTube and Prime buttons keep working through a small accessibility service that only reads those buttons. Pick what each one opens in *Free My TV* → *Remote Buttons*; *Original* turns the service off. On Vestel-made TVs (F&U and other store brands) and Xiaomi (Formovie) projectors the same goes for the Netflix button, and on KTC-made TVs (NextStar) for the Tabii button. On Sony TVs, the BRAVIA CORE, Netflix, Disney+, Prime Video, YouTube and Crunchyroll buttons (and Google Play, on remotes that have it) can each open the app you pick, or keep Sony's default. On Xiaomi TVs whose remote has a Mi button instead of Home, that button opens Free My TV instead of PatchWall (or, if you pick it, PatchWall as before, or another app). On Xiaomi TVs, the YouTube button opens YouTube again (Google TV's home screen answered it), and the PatchWall button can open the app you pick. On Xiaomi TVs sold in Russia, the same goes for the Okko, VK, Rutube, KION, Wink and IVI buttons, which keep Xiaomi's default until you pick another app. On Hisense TVs, the Prime Video, YouTube, Disney+, All Apps, Settings and profile buttons, which Google TV's home screen answered, open what you pick (All Apps opens Free My TV's own; Netflix stays with the TV).
 - With *Home Settings* → *Now Playing widget* on (it starts off), what an app is playing shows in place of the prices while it plays, on the home screen and the screensaver. Android hands that only to a notification listener, so turning the widget on allows ours through the TV's ADB; turning it off, *Original* and the switch back after crashes take it away. Where the TV refuses it, the row says so.
 - On HY300 projectors, whose stock home screen was the only way to them, the bottom drawer gets *Keystone* (keystone, zoom and projection mode) and *Screen Mirroring* (the projector's Miracast receiver), and HDMI opens through the projector's own player.
