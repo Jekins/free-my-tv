@@ -220,6 +220,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // their final gap is left between them; from there it moves with the stretch and comes back with it, squeezing the
     // gap after it.
     private final List<Spring> cardFocus = new ArrayList<>(), cardWide = new ArrayList<>();
+    // The warm light under the focused card: slower than its lift and without a bounce, so it blooms and fades softly.
+    private final List<Spring> cardGlow = new ArrayList<>();
     private static final float CARD_SQUASH = 0.25f;   // height lost per width stretched past its size: ~1% at a move
     private final Spring rowScroll = new Spring(0.42f, 0.92f, 0), rowNudge = new Spring(0.24f, 0.42f, 0);
     private RectF[] cardRects = new RectF[0];   // each slot at rest (the focused one wide): moving up and down, TalkBack
@@ -372,6 +374,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private float tileRimW, tileRimH;
     private LinearGradient rowSheen;
     private android.graphics.SweepGradient rowRim;
+    // The focused card's warm light under it (drawCardGlow): a unit circle's gradient, light yellow in the middle, the
+    // accent, then a deeper orange as it fades; scaled to an ellipse under the card each frame.
+    private final Paint glow = new Paint(Paint.DITHER_FLAG);
+    private final Shader glowShader = new android.graphics.RadialGradient(0, 0, 1,
+            new int[] {0xC8FFD873, 0xB8FFC233, 0x80FFB22E, 0x38FFA024, 0x10FF9A20, 0x00FF9A20},
+            new float[] {0, 0.28f, 0.5f, 0.7f, 0.86f, 1}, Shader.TileMode.CLAMP);
     private final RectF logoRect = new RectF();
     private final Paint starPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private android.graphics.ColorFilter veilFilter;
@@ -907,6 +915,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         shadowSoft.setMaskFilter(new BlurMaskFilter(12 * k, BlurMaskFilter.Blur.NORMAL));
         shadowDeep.setMaskFilter(new BlurMaskFilter(DEEP_BLUR * k, BlurMaskFilter.Blur.NORMAL));
         halo.setMaskFilter(new BlurMaskFilter(22 * k, BlurMaskFilter.Blur.NORMAL));
+        glow.setShader(glowShader);
         border.setStyle(Paint.Style.STROKE);
         border.setStrokeWidth(2 * k);
         rim.setStyle(Paint.Style.STROKE);
@@ -937,7 +946,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // The row: lift, widths, scroll, its shift for the menu and the bump at its end; empty cards pulse while their
         // titles load.
         float shiftShown = menuShift.value;
-        boolean cardsMoving = step(cardFocus, dt) | step(cardWide, dt) | rowScroll.step(dt) | rowNudge.step(dt)
+        boolean cardsMoving = step(cardFocus, dt) | step(cardGlow, dt) | step(cardWide, dt) | rowScroll.step(dt) | rowNudge.step(dt)
                 | menuShift.step(dt) | rowOut.step(dt) | rowIn.step(dt) | slots > cards.size() | up < fadingUntil;
         if (rowTab != tab && rowOut.value < 0.04f) {
             swapRow(true);   // the last tab's row has faded: the selected one's comes in
@@ -2305,13 +2314,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             micFocus.snap(micTarget);
         }
         restartCaret();
-        heroChanged |= aim(cardFocus, !sheetOpen && zone == Z_CARDS ? cardIndex : -1, snap) | aimRow(snap) | topChanged;
+        heroChanged |= aimCards(snap) | aimRow(snap) | topChanged;
         statusChanged |= topChanged;
         tilesDirty |= snap || tilesChanged;
         statusDirty |= snap || statusChanged;
         heroDirty |= snap || heroChanged;
         drawerDirty |= snap || drawerChanged;
         spoken.focusMoved();
+    }
+
+    /** The row's focus: the focused card's lift and its light (none with the sheet open or the focus elsewhere). */
+    private boolean aimCards(boolean snap) {
+        int focused = !sheetOpen && zone == Z_CARDS ? cardIndex : -1;
+        return aim(cardFocus, focused, snap) | aim(cardGlow, focused, snap);
     }
 
     /** Aims a group's springs (only `focused` at 1); returns true if any target changed. */
@@ -4328,7 +4343,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             retarget(false);
         }
         // Only the row's springs: snapping them all would also stop the tabs' pill mid-slide.
-        aim(cardFocus, !sheetOpen && zone == Z_CARDS ? cardIndex : -1, reset);
+        aimCards(reset);
         aimRow(reset);
         heroDirty = true;
         if (changed || reset || fadingUntil > now) wake();
@@ -4352,6 +4367,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void setSlots(int n, boolean reset) {
         while (cardFocus.size() < n) {
             cardFocus.add(new Spring(0.32f, 0.78f, 0));
+            cardGlow.add(new Spring(0.5f, 1, 0));
             cardWide.add(new Spring(0.4f, 0.76f, 0, 0.56f));   // wide in 0.22 s, ~2.5% over at 0.33 s, then softly back
         }
         if (cardRects.length < n) {
@@ -4368,6 +4384,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             java.util.Arrays.fill(imageAt, 0);
             for (int i = 0; i < cardFocus.size(); i++) {
                 cardFocus.get(i).snap(0);
+                cardGlow.get(i).snap(0);
                 cardWide.get(i).snap(0);
             }
             rowScroll.snap(0);
@@ -4698,11 +4715,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.scale(s, s);
         tmp.set(-bw / 2, -ch / 2, bw / 2, ch / 2);
         tmp.offset(0, (10 + 14 * f) * k);
-        shadowDeep.setColor(Ui.alpha(0xFF000000, (tone(0.14f, 0.32f) + tone(0.2f, 0.28f) * f) * rowA));
+        // Its warm light takes the place of some of the shadow under it (yellow over gray turns muddy).
+        float g = p == null ? 0 : Ui.clamp(cardGlow.get(i).value);
+        shadowDeep.setColor(Ui.alpha(0xFF000000, (tone(0.14f, 0.32f) + tone(0.2f, 0.28f) * f) * (1 - 0.45f * g) * rowA));
         // A card with a title is opaque (its photo, or its color until the photo comes): its shadow's middle, which it
         // covers, isn't drawn (with the taller cards, the row went from 58 to 57 frames a second without this).
         shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep, p != null);
         c.restore();
+        if (g > 0.004f) drawCardGlow(c, cx, cy + ch * s / 2, bw * s / 2, r0 * s, g * rowA);
         Backdrop b = p == null ? null : recs.backdrop(p);
         float shown = b == null || b.card == null ? 0 : imageAt[i] <= 1 ? 1 : Ui.clamp((up - imageAt[i]) / (float) IMAGE_FADE_MS);
         if (shown < 1) {
@@ -4777,6 +4797,25 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         if (!t.meta.isEmpty()) c.drawText(t.meta, x, metaBase, lCardMeta);
         lCardMeta.setColor(metaColor);
+    }
+
+    /**
+     * The focused card's warm light, as if it shone from under it: an ellipse's glow centered a little above its bottom
+     * edge, so the card covers its upper part and it shows below and in the rounded corners. As `g` rises it brightens,
+     * spreads past the card's sides and reaches further down; falling, it draws back the same way. Clipped to what the
+     * card doesn't cover (one gradient fill, no blur: this TV's GPU pays for every pixel).
+     */
+    private void drawCardGlow(Canvas c, float cx, float bottom, float half, float r, float g) {
+        float rx = half * (0.84f + 0.3f * g), ry = (56 + 96 * g) * k, gy = bottom - 0.28f * ry;
+        // From where the ellipse passes the card's sides (no edge cut in the light beside it), else from its corners.
+        float out = half / rx, from = out < 1 ? gy - ry * (float) Math.sqrt(1 - out * out) : bottom - r;
+        c.save();
+        c.clipRect(cx - rx, Math.min(from, bottom - r), cx + rx, gy + ry);
+        c.translate(cx, gy);
+        c.scale(rx, ry);
+        glow.setAlpha(Math.round(255 * g));
+        c.drawRect(-1, -1, 1, 1, glow);
+        c.restore();
     }
 
     /**
