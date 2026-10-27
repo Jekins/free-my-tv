@@ -2977,6 +2977,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Paint ageRim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private String aboutLine = "";
     private StaticLayout aboutLayout;
+    private float aboutTitleBase, aboutTop;   // the title's baseline and the story's top (aboutMenu)
     private final RectF menuRect = new RectF();   // the panel at rest, on screen
     private final Rect menuBounds = new Rect();   // its two layers: the panel and room for its shadow
     // Trakt, per title (Recs.key): marked watched or hidden from here; the stars chosen; the stars sent (or on their way)
@@ -3557,24 +3558,46 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
-    /** The menu's card's words (drawAbout), made as it opens: its title, cut to the card, and its story's first lines. */
+    /**
+     * The menu's card's words (drawAbout), made as it opens: its title, cut to the card (unless the card writes it), and
+     * its whole story: in the card's width; longer, across the screen under the card and the menu (the panel ends far
+     * above); longer still, smaller. Cut only if even that can't hold it, down to the screen's bottom.
+     */
     private void aboutMenu() {
         Recs.Pick p = menuPick;
         aboutLine = "";
         aboutLayout = null;
         if (p == null || aboutTitle == null) return;
+        Backdrop b = recs.ready(p);
+        boolean logo = b != null && b.card != null && b.logo != null;   // else the card writes its title (drawLightCard)
         String title = p.title == null ? "" : p.title.trim(), about = p.about == null ? "" : p.about;
-        aboutLine = TextUtils.ellipsize(title, aboutTitle, wideW, TextUtils.TruncateAt.END).toString();
+        if (logo) aboutLine = TextUtils.ellipsize(title, aboutTitle, wideW, TextUtils.TruncateAt.END).toString();
+        float metaBase = (L_CARDS_TOP + L_CARD_H + (logo ? 46 : 80)) * k;
+        aboutTitleBase = metaBase + 58 * k;
+        aboutTop = aboutLine.isEmpty() ? metaBase + 22 * k : aboutTitleBase + 18 * k;
         if (about.isEmpty()) return;
-        aboutLayout = StaticLayout.Builder.obtain(about, 0, about.length(), aboutText, Math.max(1, Math.round(wideW)))
-                .setMaxLines(3).setEllipsize(TextUtils.TruncateAt.END).setLineSpacing(9 * k, 1).setIncludePad(false).build();
+        float room = h - 36 * k - aboutTop, full = (CONTENT_R - MARGIN) * k;
+        float[][] tries = {{25, wideW}, {25, full}, {22, full}, {20, full}};   // text size, width
+        for (float[] t : tries) {
+            aboutText.setTextSize(t[0] * k);   // the layout draws with it: left at the one that fits
+            aboutLayout = story(about, t[1], Integer.MAX_VALUE);
+            if (aboutLayout.getHeight() <= room) return;
+        }
+        int lines = (int) (room / ((float) aboutLayout.getHeight() / aboutLayout.getLineCount()));
+        aboutLayout = story(about, full, Math.max(1, lines));
+    }
+
+    private StaticLayout story(String text, float width, int lines) {
+        return StaticLayout.Builder.obtain(text, 0, text.length(), aboutText, Math.max(1, Math.round(width)))
+                .setMaxLines(lines).setEllipsize(TextUtils.TruncateAt.END)
+                .setLineSpacing(aboutText.getTextSize() * 0.36f, 1).setIncludePad(false).build();
     }
 
     /**
      * Under the menu's card and its details, in the menu's ink: its age rating in a frame at the end of the details (as
      * the Apple TV app has it), its title in words (the logo on the card may be another language's or hard to read;
-     * a card without a logo already writes it), then three lines of its story. Drawn with the dimmed screen behind the
-     * menu, so it fades in with it.
+     * a card without a logo already writes it), then its whole story (aboutMenu). Drawn with the dimmed screen behind
+     * the menu, so it fades in with it.
      */
     private void drawAbout(Canvas c) {
         Recs.Pick p = menuPick;
@@ -3587,8 +3610,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         String age = p.age == null ? "" : p.age;
         if (!age.isEmpty()) {
             float x = left + t.ratingW + (t.meta.isEmpty() ? 0 : lCardMeta.measureText(t.meta) + 18 * k);
-            float pad = 9 * k, h = 31 * k, cy = metaBase - Ui.halfCap(lCardMeta);
-            tmp.set(x, cy - h / 2, x + ageText.measureText(age) + 2 * pad, cy + h / 2);
+            float pad = 9 * k, boxH = 31 * k, cy = metaBase - Ui.halfCap(lCardMeta);
+            tmp.set(x, cy - boxH / 2, x + ageText.measureText(age) + 2 * pad, cy + boxH / 2);
             if (tmp.right <= left + wideW) {
                 ageRim.setStrokeWidth(2 * k);
                 ageRim.setColor(Ui.alpha(ink, 0.75f));
@@ -3597,16 +3620,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 c.drawText(age, x + pad, cy + Ui.halfCap(ageText), ageText);
             }
         }
-        float y = metaBase;
-        if (logo && !aboutLine.isEmpty()) {
-            y += 62 * k;
+        if (!aboutLine.isEmpty()) {
             aboutTitle.setColor(ink);
-            c.drawText(aboutLine, left, y, aboutTitle);
+            c.drawText(aboutLine, left, aboutTitleBase, aboutTitle);
         }
         if (aboutLayout == null) return;
         aboutText.setColor(Ui.alpha(ink, 0.8f));
         c.save();
-        c.translate(left, y + 20 * k);
+        c.translate(left, aboutTop);
         aboutLayout.draw(c);
         c.restore();
     }
