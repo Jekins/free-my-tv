@@ -18,7 +18,8 @@ import android.graphics.Shader;
  *  - the Liquid Glass version (480×270, lightly blurred): the photo shows through the shelf and the cards;
  *  - with forLight: the card (the photo without scrims, 16:9, big enough to cover the wide card at its focused size;
  *    each card shows its center at its own width, so a card that widens or narrows keeps the same picture) and the
- *    frosted and glass versions blended with white (by day) and with near-black (at night).
+ *    frosted and glass versions blended with white (by day) and with near-black (at night); for a pick, also its
+ *    light (ambient(): the photo small and blurred past its edges, the focused card's glow in its own colors).
  * Only what is needed gets built (with forLight, no full photo: the cards are lightweight, so all 9 for the three tabs
  * fit in memory, ready); the other fields stay null.
  * The final image lives only in GPU memory (HARDWARE): drawing it costs one texture, and the process doesn't hold 8 MB.
@@ -31,6 +32,11 @@ final class Backdrop {
     static final int CARD_W = ui(1092), CARD_H = ui(614);
     /** A title logo's box on the wide card at its focused size (42% of its width, 24% of its height, then 1.05×). */
     static final int LOGO_W = ui(460), LOGO_H = ui(127);
+    /**
+     * The focused card's light (ambient()): the photo this small, in clear margins of AMBIENT_PAD; its blur (three box
+     * passes of AMBIENT_BLUR) reaches exactly AMBIENT_REACH past the photo's edges, and past that it's clear.
+     */
+    static final int AMBIENT_W = 160, AMBIENT_H = 90, AMBIENT_PAD = 16, AMBIENT_BLUR = 4, AMBIENT_REACH = 3 * AMBIENT_BLUR;
 
     private static float uiScale() {
         android.util.DisplayMetrics m = android.content.res.Resources.getSystem().getDisplayMetrics();
@@ -46,25 +52,29 @@ final class Backdrop {
     final int[] glass;      // lightly blurred (Liquid Glass: the photo shows through the glass)
     final Bitmap card;                  // the photo on the cards
     final BitmapShader cardShader;      // its own, for the rounded cards: it goes away with the backdrop
+    final Bitmap ambient;               // the focused card's light in the photo's colors (ambient()); null: none
+    final BitmapShader ambientShader;
     final int[] light, lightGlass;     // by day: the frosted and glass versions, lightened
     final Bitmap lightImage;            // by day: the background (the lightened frosted version, scaled up on screen)
     final int[] nightFrost, nightGlass; // at night: frosted (the bottom drawer's frosted glass) and glass, darkened
     final Bitmap nightImage;            // at night: the background (the darkened frosted version)
     Bitmap logo;                        // the title's logo for its card (logo()), set before it's shared; null: none
 
-    private Backdrop(Bitmap image, int[] frost, int[] glass, Bitmap card, int[] light, int[] lightGlass,
+    private Backdrop(Bitmap image, int[] frost, int[] glass, Bitmap card, Bitmap ambient, int[] light, int[] lightGlass,
                      int[] night, int[] nightGlass) {
-        this(image, frost, glass, card, light, lightGlass, night, nightGlass, light, night, FW, FH);
+        this(image, frost, glass, card, ambient, light, lightGlass, night, nightGlass, light, night, FW, FH);
     }
 
     /** `lightBg` and `nightBg` (bw × bh): the background itself, when it isn't the frosted version. */
-    private Backdrop(Bitmap image, int[] frost, int[] glass, Bitmap card, int[] light, int[] lightGlass,
+    private Backdrop(Bitmap image, int[] frost, int[] glass, Bitmap card, Bitmap ambient, int[] light, int[] lightGlass,
                      int[] night, int[] nightGlass, int[] lightBg, int[] nightBg, int bw, int bh) {
         this.image = image;
         this.frost = frost;
         this.glass = glass;
         this.card = card;
         cardShader = card == null ? null : new BitmapShader(card, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+        this.ambient = ambient;
+        ambientShader = ambient == null ? null : new BitmapShader(ambient, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
         this.light = light;
         this.lightGlass = lightGlass;
         this.nightFrost = night;
@@ -108,10 +118,12 @@ final class Backdrop {
                 int[] sharp = reduce(out, GW, GH, 1, 1);
                 int[] lightBg = ramp(sharp.clone(), 0.82f, 0.45f, true), nightBg = ramp(sharp, 0.76f, 0.5f, false);
                 out.recycle();
-                return new Backdrop(null, frost, null, card, light, lightGlass, night, nightGlass, lightBg, nightBg, GW, GH);
+                return new Backdrop(null, frost, null, card, null, light, lightGlass, night, nightGlass, lightBg, nightBg, GW, GH);
             }
+            // Its light from the photo as it is (not the card's, darkened under the logo: the light under it would go dim).
+            Bitmap ambient = ambient(out);
             out.recycle();
-            return new Backdrop(null, frost, null, card, light, lightGlass, night, nightGlass);
+            return new Backdrop(null, frost, null, card, ambient, light, lightGlass, night, nightGlass);
         }
 
         float boost = Math.max(0, Math.min(0.3f, (luminance(out, 0, 0.22f, 0.5f, 0.62f) - 0.22f) * 1.1f));
@@ -139,7 +151,7 @@ final class Backdrop {
         int[] frost = reduce(out, FW, FH, 3, 3);
         int[] glass = reduce(out, GW, GH, 2, 2);
         // At night the home screen dims the sharp photo by NIGHT_DIM; the glass gets the same, ready.
-        return new Backdrop(gpu(out), frost, glass, null, null, null,
+        return new Backdrop(gpu(out), frost, glass, null, null, null, null,
                 darken(frost.clone(), NIGHT_DIM), darken(glass.clone(), NIGHT_DIM));
     }
 
@@ -210,6 +222,72 @@ final class Backdrop {
             new Canvas(out).drawRect(0, h * 0.35f, w, h, p);
         }
         return gpu(out);
+    }
+
+    /**
+     * The focused card's light, like a TV's ambient glow: the photo small (AMBIENT_W × AMBIENT_H), a little more
+     * saturated, in clear margins, blurred so its own colors spread past its edges and fade out there. HomeView draws it
+     * under the card, scaled to it, so the card shines with the colors at its edges. Blurred premultiplied: the clear
+     * margins fade the light without darkening it.
+     */
+    private static Bitmap ambient(Bitmap full) {
+        int[] photo = reduce(full, AMBIENT_W, AMBIENT_H, 0, 0);
+        int w = AMBIENT_W + 2 * AMBIENT_PAD, h = AMBIENT_H + 2 * AMBIENT_PAD;
+        int[] px = new int[w * h];
+        for (int y = 0; y < AMBIENT_H; y++) {
+            for (int x = 0; x < AMBIENT_W; x++) {
+                int p = photo[y * AMBIENT_W + x], r = (p >> 16) & 255, g = (p >> 8) & 255, b = p & 255;
+                float l = 0.299f * r + 0.587f * g + 0.114f * b, sat = 1.4f;
+                px[(y + AMBIENT_PAD) * w + x + AMBIENT_PAD] = 0xFF000000 | clamp(l + (r - l) * sat) << 16
+                        | clamp(l + (g - l) * sat) << 8 | clamp(l + (b - l) * sat);
+            }
+        }
+        int[] tmp = new int[px.length];
+        for (int pass = 0; pass < 3; pass++) {   // three box passes look like a Gaussian
+            boxPremultiplied(px, tmp, w, h, AMBIENT_BLUR, true);
+            boxPremultiplied(tmp, px, w, h, AMBIENT_BLUR, false);
+        }
+        for (int i = 0; i < px.length; i++) {   // Bitmap.createBitmap takes the colors unpremultiplied
+            int a = px[i] >>> 24;
+            if (a == 0 || a == 255) continue;
+            float u = 255f / a;
+            px[i] = a << 24 | clamp(((px[i] >> 16) & 255) * u) << 16 | clamp(((px[i] >> 8) & 255) * u) << 8
+                    | clamp((px[i] & 255) * u);
+        }
+        return gpu(Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888));
+    }
+
+    private static int clamp(float v) {
+        return Math.max(0, Math.min(255, Math.round(v)));
+    }
+
+    /**
+     * Moving average of radius r in one direction over premultiplied colors (they start opaque or clear, and stay
+     * premultiplied), clear past the edges.
+     */
+    private static void boxPremultiplied(int[] in, int[] out, int w, int h, int r, boolean horizontal) {
+        int n = horizontal ? w : h, lines = horizontal ? h : w, step = horizontal ? 1 : w, lineStep = horizontal ? w : 1;
+        float k = 1f / (2 * r + 1);
+        for (int line = 0; line < lines; line++) {
+            int base = line * lineStep;
+            float sa = 0, sr = 0, sg = 0, sb = 0;
+            for (int i = 0; i <= r && i < n; i++) {
+                int p = in[base + i * step];
+                sa += p >>> 24;
+                sr += (p >> 16) & 255;
+                sg += (p >> 8) & 255;
+                sb += p & 255;
+            }
+            for (int i = 0; i < n; i++) {
+                out[base + i * step] = Math.round(sa * k) << 24 | Math.round(sr * k) << 16 | Math.round(sg * k) << 8
+                        | Math.round(sb * k);
+                int add = i + r + 1 < n ? in[base + (i + r + 1) * step] : 0, sub = i - r >= 0 ? in[base + (i - r) * step] : 0;
+                sa += (add >>> 24) - (sub >>> 24);
+                sr += ((add >> 16) & 255) - ((sub >> 16) & 255);
+                sg += ((add >> 8) & 255) - ((sub >> 8) & 255);
+                sb += (add & 255) - (sub & 255);
+            }
+        }
     }
 
     /** The center of the image at that aspect ratio (the image itself when it already has it). */

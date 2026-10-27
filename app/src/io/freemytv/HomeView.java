@@ -220,7 +220,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // their final gap is left between them; from there it moves with the stretch and comes back with it, squeezing the
     // gap after it.
     private final List<Spring> cardFocus = new ArrayList<>(), cardWide = new ArrayList<>();
-    // The warm light under the focused card: slower than its lift and without a bounce, so it blooms and fades softly.
+    // The focused card's light in its photo's colors (drawAmbient): slower than its lift and without a bounce, so it
+    // blooms and fades softly.
     private final List<Spring> cardGlow = new ArrayList<>();
     private static final float CARD_SQUASH = 0.25f;   // height lost per width stretched past its size: ~1% at a move
     private final Spring rowScroll = new Spring(0.42f, 0.92f, 0), rowNudge = new Spring(0.24f, 0.42f, 0);
@@ -374,12 +375,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private float tileRimW, tileRimH;
     private LinearGradient rowSheen;
     private android.graphics.SweepGradient rowRim;
-    // The focused card's warm light under it (drawCardGlow): a unit circle's gradient, light yellow in the middle, the
-    // accent, then a deeper orange as it fades; scaled to an ellipse under the card each frame.
-    private final Paint glow = new Paint(Paint.DITHER_FLAG);
-    private final Shader glowShader = new android.graphics.RadialGradient(0, 0, 1,
-            new int[] {0xC8FFD873, 0xB8FFC233, 0x80FFB22E, 0x38FFA024, 0x10FF9A20, 0x00FF9A20},
-            new float[] {0, 0.28f, 0.5f, 0.7f, 0.86f, 1}, Shader.TileMode.CLAMP);
+    private final Paint ambientPaint = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);   // drawAmbient
     private final RectF logoRect = new RectF();
     private final Paint starPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private android.graphics.ColorFilter veilFilter;
@@ -740,7 +736,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float kk = width / 1920f;
         measure(sky, width, height);
         measure(skyImages, Backdrop.GW, Backdrop.GH);
-        measure(heroLayer, width, Math.round(790 * kk));
+        // Down to where the focused card's light ends (drawAmbient, ~800): shorter, it was cut there in a straight line.
+        measure(heroLayer, width, Math.round(820 * kk));
         measure(status, Math.round(1160 * kk), Math.round(240 * kk));
         // Sized to what they draw (the glass and its shadow; the grown tiles and their shadows): smaller layers are
         // cheaper for the GPU to composite on every frame of the drawer animation.
@@ -915,7 +912,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         shadowSoft.setMaskFilter(new BlurMaskFilter(12 * k, BlurMaskFilter.Blur.NORMAL));
         shadowDeep.setMaskFilter(new BlurMaskFilter(DEEP_BLUR * k, BlurMaskFilter.Blur.NORMAL));
         halo.setMaskFilter(new BlurMaskFilter(22 * k, BlurMaskFilter.Blur.NORMAL));
-        glow.setShader(glowShader);
         border.setStyle(Paint.Style.STROKE);
         border.setStrokeWidth(2 * k);
         rim.setStyle(Paint.Style.STROKE);
@@ -4710,21 +4706,26 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         cell.set(cx - bw * s / 2, cy - ch * s / 2, cx + bw * s / 2, cy + ch * s / 2);
         float r = r0 * s;
         long up = SystemClock.uptimeMillis();
-        c.save();
-        c.translate(cx, cy);
-        c.scale(s, s);
-        tmp.set(-bw / 2, -ch / 2, bw / 2, ch / 2);
-        tmp.offset(0, (10 + 14 * f) * k);
-        // Its warm light takes the place of some of the shadow under it (yellow over gray turns muddy).
-        float g = p == null ? 0 : Ui.clamp(cardGlow.get(i).value);
-        shadowDeep.setColor(Ui.alpha(0xFF000000, (tone(0.14f, 0.32f) + tone(0.2f, 0.28f) * f) * (1 - 0.45f * g) * rowA));
-        // A card with a title is opaque (its photo, or its color until the photo comes): its shadow's middle, which it
-        // covers, isn't drawn (with the taller cards, the row went from 58 to 57 frames a second without this).
-        shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep, p != null);
-        c.restore();
-        if (g > 0.004f) drawCardGlow(c, cx, cy + ch * s / 2, bw * s / 2, r0 * s, g * rowA);
         Backdrop b = p == null ? null : recs.backdrop(p);
         float shown = b == null || b.card == null ? 0 : imageAt[i] <= 1 ? 1 : Ui.clamp((up - imageAt[i]) / (float) IMAGE_FADE_MS);
+        // Focused, it shines with its photo's colors (drawAmbient) in place of its shadow: lit, a card casts none, and
+        // this TV's GPU fills one soft edge for it, not two. The shadow is gone by the time the light is a third on (both
+        // at once, on the card coming and the one going, cost the row a late frame in eight).
+        float g = b == null || b.ambient == null ? 0 : Ui.clamp(cardGlow.get(i).value) * shown;
+        float shade = (tone(0.14f, 0.32f) + tone(0.2f, 0.28f) * f) * Math.max(0, 1 - g / 0.35f) * rowA;
+        if (shade > 0.004f) {
+            c.save();
+            c.translate(cx, cy);
+            c.scale(s, s);
+            tmp.set(-bw / 2, -ch / 2, bw / 2, ch / 2);
+            tmp.offset(0, (10 + 14 * f) * k);
+            shadowDeep.setColor(Ui.alpha(0xFF000000, shade));
+            // A card with a title is opaque (its photo, or its color until the photo comes): its shadow's middle, which
+            // it covers, isn't drawn (with the taller cards, the row went from 58 to 57 frames a second without this).
+            shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep, p != null);
+            c.restore();
+        }
+        if (g > 0.004f) drawAmbient(c, b, r, g * rowA);
         if (shown < 1) {
             // No photo yet: the card's color; an empty card breathes until its title comes.
             float pulse = p != null ? 1 : 0.75f + 0.25f * (float) Math.cos(up * (2 * Math.PI / 1400));
@@ -4769,6 +4770,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Under the menu's card, on its shadow over the dimmed copy, the row's gray is lost: the menu's ink, dark or white.
         int titleInk = lCardTitle.getColor(), ink = cardOverMenu ? menuTone(L_INK, WHITE) : titleInk;
         lCardTitle.setColor(Ui.alpha(ink, rowA));
+        if (logo == null) underShadow(lCardTitle, g * rowA);
         if (logo == null && (wide > 0.999f || wide < 0.001f)) {
             c.drawText(wide > 0.5f ? t.wideTitle : t.tallTitle, left, base, lCardTitle);
         } else if (logo == null) {
@@ -4777,12 +4779,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawText(t.wideTitle, left, base, lCardTitle);
             c.restore();
         }
+        lCardTitle.clearShadowLayer();
         lCardTitle.setColor(titleInk);
         float details = smoothstep(0.55f, 1, wide) * rowA;
         if (details < 0.01f || (t.meta.isEmpty() && t.rating.isEmpty())) return;
         float metaBase = logo != null ? base : top + bh + 80 * k, x = left;
         int metaColor = lCardMeta.getColor();
         lCardMeta.setColor(Ui.alpha(cardOverMenu ? ink : metaColor, details));
+        underShadow(lCardMeta, g * details);
         if (!t.rating.isEmpty()) {
             // The rating: a star in Apple's yellow, then TMDB's average.
             float size = lCardMeta.getTextSize() * 1.1f, starY = metaBase - Ui.halfCap(lCardMeta);
@@ -4796,25 +4800,55 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             x += t.ratingW;
         }
         if (!t.meta.isEmpty()) c.drawText(t.meta, x, metaBase, lCardMeta);
+        lCardMeta.clearShadowLayer();
         lCardMeta.setColor(metaColor);
     }
 
     /**
-     * The focused card's warm light, as if it shone from under it: an ellipse's glow centered a little above its bottom
-     * edge, so the card covers its upper part and it shows below and in the rounded corners. As `g` rises it brightens,
-     * spreads past the card's sides and reaches further down; falling, it draws back the same way. Clipped to what the
-     * card doesn't cover (one gradient fill, no blur: this TV's GPU pays for every pixel).
+     * Light words under a card get a soft dark shadow while its light (drawAmbient) is behind them, so they still read
+     * over a bright photo's glow; dark ones (by day) need none. `a`: how much of it (with the light and the words' fade).
+     * Its color carries its own alpha: a translucent shadow doesn't take the paint's.
      */
-    private void drawCardGlow(Canvas c, float cx, float bottom, float half, float r, float g) {
-        float rx = half * (0.84f + 0.3f * g), ry = (56 + 96 * g) * k, gy = bottom - 0.28f * ry;
-        // From where the ellipse passes the card's sides (no edge cut in the light beside it), else from its corners.
-        float out = half / rx, from = out < 1 ? gy - ry * (float) Math.sqrt(1 - out * out) : bottom - r;
+    private void underShadow(Paint p, float a) {
+        int ink = p.getColor();
+        float luma = (0.299f * ((ink >> 16) & 255) + 0.587f * ((ink >> 8) & 255) + 0.114f * (ink & 255)) / 255;
+        float dark = 0.7f * a * smoothstep(0.48f, 0.58f, luma);   // the night's gray details (0.6) and white get it all
+        if (dark < 0.01f) p.clearShadowLayer();
+        else p.setShadowLayer(5 * k, 0, 1.5f * k, Ui.alpha(0xFF000000, dark));
+    }
+
+    /**
+     * The focused card's light in its photo's colors (Backdrop.ambient), like a TV's ambient glow: the blurred photo
+     * under the card (`cell`), its photo part a little larger than the card and lower, so the light shows a little past
+     * its top and sides and more past its bottom. As `g` rises the photo part grows from inside the card to past its
+     * edges and the light brightens; falling, it draws back the same way. Only what the card leaves uncovered is filled:
+     * the four bands around it and its rounded corners (its photo covers the rest, and this TV's GPU pays for every
+     * pixel: bands reaching a corner's radius into the card cost a third more).
+     */
+    private void drawAmbient(Canvas c, Backdrop b, float r, float g) {
+        int pad = Backdrop.AMBIENT_PAD, reach = Backdrop.AMBIENT_REACH;
+        float grow = (-24 + 32 * g) * k, drop = 8 * g * k;
+        float sx = (cell.width() + 2 * grow) / Backdrop.AMBIENT_W, sy = (cell.height() + 2 * grow) / Backdrop.AMBIENT_H;
+        float x0 = cell.left - grow - pad * sx, y0 = cell.top - grow + drop - pad * sy;
+        // In the bitmap's pixels: where the light ends (the blur's reach past the photo), the card, and its corners.
+        float l = pad - reach, t = pad - reach, rt = pad + Backdrop.AMBIENT_W + reach, bt = pad + Backdrop.AMBIENT_H + reach;
+        float cl = Math.max(l, (cell.left - x0) / sx), ct = Math.max(t, (cell.top - y0) / sy);
+        float cr = Math.min(rt, (cell.right - x0) / sx), cb = Math.min(bt, (cell.bottom - y0) / sy);
+        float rx = Math.min(r / sx, (cr - cl) / 2), ry = Math.min(r / sy, (cb - ct) / 2);
         c.save();
-        c.clipRect(cx - rx, Math.min(from, bottom - r), cx + rx, gy + ry);
-        c.translate(cx, gy);
-        c.scale(rx, ry);
-        glow.setAlpha(Math.round(255 * g));
-        c.drawRect(-1, -1, 1, 1, glow);
+        c.translate(x0, y0);
+        c.scale(sx, sy);
+        ambientPaint.setShader(b.ambientShader);
+        ambientPaint.setAlpha(Math.round(255 * g * tone(0.85f, 1f)));
+        c.drawRect(l, t, rt, ct, ambientPaint);
+        c.drawRect(l, cb, rt, bt, ambientPaint);
+        c.drawRect(l, ct, cl, cb, ambientPaint);
+        c.drawRect(cr, ct, rt, cb, ambientPaint);
+        c.drawRect(cl, ct, cl + rx, ct + ry, ambientPaint);
+        c.drawRect(cr - rx, ct, cr, ct + ry, ambientPaint);
+        c.drawRect(cl, cb - ry, cl + rx, cb, ambientPaint);
+        c.drawRect(cr - rx, cb - ry, cr, cb, ambientPaint);
+        ambientPaint.setShader(null);
         c.restore();
     }
 
