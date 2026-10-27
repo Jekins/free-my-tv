@@ -57,6 +57,8 @@ final class Recs {
         String originalTitle;
         int year;
         float rating;           // Trakt's average for its picks, else TMDB's (0 to 10); 0 = too few votes to say
+        String about;           // TMDB's overview in the TV's language ("" when it has none); null until asked (about)
+        String age;             // its age rating ("16+", "TV-MA"; see age), "" when none says; null until asked
         boolean detailed;
         boolean searched;       // only a search's answer: its photo goes to a folder of its own, not the rows'
         boolean nowhere;        // none of the TV's apps has it (with Filmix: Filmix said so): only the watchlist shows it
@@ -1836,9 +1838,11 @@ final class Recs {
      */
     private void fetchDetails(Pick p) throws Exception {
         JSONObject o = get("/" + p.kind + "/" + p.id
-                + "?language=" + lang() + "&append_to_response=" + (FILMIX_ONLY ? "images" : "watch/providers,images")
+                + "?language=" + lang() + "&append_to_response=" + (FILMIX_ONLY ? "images," : "watch/providers,images,") + ages(p.kind)
                 + "&include_image_language=null," + Ui.language.replaceAll("-.*", "") + ",en");
         p.title = title(p, o);
+        p.about = o.optString("overview", "").trim();
+        p.age = age(p.kind, o);
         String origField = p.kind.equals("movie") ? "original_title" : "original_name";
         String orig = o.optString(origField, "");
         if (!orig.isEmpty()) p.originalTitle = orig;
@@ -1882,6 +1886,62 @@ final class Recs {
         if (p.app != null && !FILMIX_ONLY) parts.add(SERVICE_NAME.get(p.app));   // with Filmix, every card is Filmix's
         p.meta = String.join(" · ", parts);
         p.detailed = true;
+    }
+
+    /** TMDB's part of a title's details with its age ratings, by country. */
+    private static String ages(String kind) {
+        return kind.equals("movie") ? "release_dates" : "content_ratings";
+    }
+
+    /**
+     * The title's age rating, as the screen's country has it (its language's: pt-BR's BR, else the language's own code,
+     * "ru" → RU, as most are), else REGION's, else the US's: a movie's first release there that has one. "" if none.
+     */
+    private static String age(String kind, JSONObject o) {
+        String country = Ui.locale().getCountry();
+        String[] where = {country.isEmpty() ? Ui.language.replaceAll("-.*", "").toUpperCase(Locale.ROOT) : country, REGION, "US"};
+        JSONObject box = o.optJSONObject(ages(kind));
+        JSONArray results = box == null ? null : box.optJSONArray("results");
+        for (String c : where) {
+            for (int i = 0; results != null && i < results.length(); i++) {
+                JSONObject r = results.optJSONObject(i);
+                if (r == null || !c.equals(r.optString("iso_3166_1"))) continue;
+                if (!kind.equals("movie")) {
+                    String a = r.optString("rating").trim();
+                    if (!a.isEmpty()) return a;
+                    continue;
+                }
+                JSONArray dates = r.optJSONArray("release_dates");
+                for (int j = 0; dates != null && j < dates.length(); j++) {
+                    JSONObject d = dates.optJSONObject(j);
+                    String a = d == null ? "" : d.optString("certification").trim();
+                    if (!a.isEmpty()) return a;
+                }
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Main thread: the title's overview and age rating from TMDB, for one saved before they were kept; `done` runs on the
+     * main thread once they're in. Nothing when it has them.
+     */
+    void about(Pick p, Runnable done) {
+        if (p.about != null || p.id <= 0 || !hasKey(context)) return;
+        searchDetails.execute(() -> {
+            try {
+                JSONObject o = get("/" + p.kind + "/" + p.id + "?language=" + lang() + "&append_to_response=" + ages(p.kind));
+                String about = o.optString("overview", "").trim(), age = age(p.kind, o);
+                main.post(() -> {
+                    p.about = about;
+                    p.age = age;
+                    io.execute(this::save);
+                    done.run();
+                });
+            } catch (Exception e) {
+                AppLog.w("TMDB overview: " + e.getMessage());
+            }
+        });
     }
 
     /**
@@ -2246,7 +2306,9 @@ final class Recs {
     }
 
     private static JSONObject json(Pick p) throws org.json.JSONException {
-        return new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title)
+        JSONObject o = new JSONObject();
+        if (p.about != null) o.put("about", p.about).put("age", p.age == null ? "" : p.age);   // absent: asked when needed
+        return o.put("id", p.id).put("kind", p.kind).put("title", p.title)
                 .put("original", p.originalTitle == null ? "" : p.originalTitle).put("year", p.year)
                 .put("rating", (double) p.rating).put("backdrop", p.backdrop == null ? "" : p.backdrop)
                 .put("logo", p.logo == null ? "" : p.logo)
@@ -2267,6 +2329,8 @@ final class Recs {
             p.originalTitle = o.optString("original").isEmpty() ? null : o.optString("original");
             p.year = o.optInt("year");
             p.rating = (float) o.optDouble("rating", 0);
+            p.about = o.has("about") ? o.optString("about") : null;
+            p.age = o.has("about") ? o.optString("age") : null;
             p.backdrop = o.optString("backdrop").isEmpty() ? null : o.optString("backdrop");
             p.logo = o.optString("logo").isEmpty() ? null : o.optString("logo");
             p.link = o.optString("link").isEmpty() ? null : o.optString("link");

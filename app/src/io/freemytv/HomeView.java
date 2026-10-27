@@ -829,6 +829,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         menuHint = Ui.text(Ui.medium, 26 * k, L_INK);
         menuTitle = Ui.text(Ui.semibold, 34 * k, L_INK);
         menuValue = Ui.text(Ui.semibold, 30 * k, L_INK);
+        aboutTitle = new TextPaint(Ui.text(Ui.semibold, 33 * k, L_INK));
+        aboutText = new TextPaint(Ui.text(Ui.regular, 25 * k, L_INK));
+        ageText = Ui.text(Ui.semibold, 18 * k, L_INK);
+        ageText.setLetterSpacing(0.04f);
+        ageRim.setStyle(Paint.Style.STROKE);
         if (filterPanel == null) {
             filterPanel = new FilterPanel(getContext(), new FilterPanel.Host() {
                 @Override public void dirty() {
@@ -2966,6 +2971,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private Scene menuScene;    // the panel's glass, over that copy
     private final Paint shotPaint = new Paint(Paint.FILTER_BITMAP_FLAG), starLine = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Paint menuText, menuHint, menuTitle, menuValue, lEmpty, lBadge;
+    // Under the menu's card (drawAbout): its title in words, the start of its story, its age rating after its details.
+    private TextPaint aboutTitle, aboutText;
+    private Paint ageText;
+    private final Paint ageRim = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private String aboutLine = "";
+    private StaticLayout aboutLayout;
     private final RectF menuRect = new RectF();   // the panel at rest, on screen
     private final Rect menuBounds = new Rect();   // its two layers: the panel and room for its shadow
     // Trakt, per title (Recs.key): marked watched or hidden from here; the stars chosen; the stars sent (or on their way)
@@ -3016,6 +3027,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (!Recs.WATCHLIST.equals(kind) && !Recs.SEARCH.equals(kind)) menuList[menuCount++] = M_HIDE;
         }
         menuSignedIn = Trakt.hasOAuth();
+        aboutMenu();
+        Recs.Pick asked = menuPick;   // saved before the overview was kept: it's asked now, and shows when it comes
+        recs.about(asked, () -> {
+            if (menuPick != asked) return;
+            aboutMenu();
+            menuBackDirty = true;
+            wake();
+        });
         Integer r = rated.get(Recs.key(menuPick));
         starIndex = r == null ? 5 : r - 1;
         aimMenu(true);
@@ -3534,7 +3553,62 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             cardOverMenu = true;
             drawLightCard(c, menuCard);
             cardOverMenu = false;
+            drawAbout(c);
         }
+    }
+
+    /** The menu's card's words (drawAbout), made as it opens: its title, cut to the card, and its story's first lines. */
+    private void aboutMenu() {
+        Recs.Pick p = menuPick;
+        aboutLine = "";
+        aboutLayout = null;
+        if (p == null || aboutTitle == null) return;
+        String title = p.title == null ? "" : p.title.trim(), about = p.about == null ? "" : p.about;
+        aboutLine = TextUtils.ellipsize(title, aboutTitle, wideW, TextUtils.TruncateAt.END).toString();
+        if (about.isEmpty()) return;
+        aboutLayout = StaticLayout.Builder.obtain(about, 0, about.length(), aboutText, Math.max(1, Math.round(wideW)))
+                .setMaxLines(3).setEllipsize(TextUtils.TruncateAt.END).setLineSpacing(9 * k, 1).setIncludePad(false).build();
+    }
+
+    /**
+     * Under the menu's card and its details, in the menu's ink: its age rating in a frame at the end of the details (as
+     * the Apple TV app has it), its title in words (the logo on the card may be another language's or hard to read;
+     * a card without a logo already writes it), then three lines of its story. Drawn with the dimmed screen behind the
+     * menu, so it fades in with it.
+     */
+    private void drawAbout(Canvas c) {
+        Recs.Pick p = menuPick;
+        CardText t = menuCard < cardWords.length ? cardWords[menuCard] : null;
+        if (p == null || t == null) return;
+        Backdrop b = recs.ready(p);
+        boolean logo = b != null && b.card != null && b.logo != null;
+        float left = cardX[menuCard], bottom = (L_CARDS_TOP + L_CARD_H) * k, metaBase = bottom + (logo ? 46 : 80) * k;
+        int ink = menuTone(L_INK, WHITE);
+        String age = p.age == null ? "" : p.age;
+        if (!age.isEmpty()) {
+            float x = left + t.ratingW + (t.meta.isEmpty() ? 0 : lCardMeta.measureText(t.meta) + 18 * k);
+            float pad = 9 * k, h = 31 * k, cy = metaBase - Ui.halfCap(lCardMeta);
+            tmp.set(x, cy - h / 2, x + ageText.measureText(age) + 2 * pad, cy + h / 2);
+            if (tmp.right <= left + wideW) {
+                ageRim.setStrokeWidth(2 * k);
+                ageRim.setColor(Ui.alpha(ink, 0.75f));
+                c.drawRoundRect(tmp, 7 * k, 7 * k, ageRim);
+                ageText.setColor(Ui.alpha(ink, 0.9f));
+                c.drawText(age, x + pad, cy + Ui.halfCap(ageText), ageText);
+            }
+        }
+        float y = metaBase;
+        if (logo && !aboutLine.isEmpty()) {
+            y += 62 * k;
+            aboutTitle.setColor(ink);
+            c.drawText(aboutLine, left, y, aboutTitle);
+        }
+        if (aboutLayout == null) return;
+        aboutText.setColor(Ui.alpha(ink, 0.8f));
+        c.save();
+        c.translate(left, y + 20 * k);
+        aboutLayout.draw(c);
+        c.restore();
     }
 
     /**
