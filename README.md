@@ -205,7 +205,10 @@ searches YouTube for the title's trailer in the TV's language; *Watched* adds it
 turns into ten stars to rate it (Trakt's own 1 to 10, with Trakt's word for each: 8 is *Great*), sent once, a moment
 after the last press; *Add to Watchlist* puts it on your Trakt watchlist (or *Remove from Watchlist* takes it off);
 *Don't recommend* takes it off the row and off your Trakt recommendations (Trakt's hidden list, which trakt.tv can
-undo). Like Liquid Glass, the menu and the filters take their look from what is under them: by day over a dark photo
+undo). Under the card, its details gain its age rating in a frame (TMDB's, for the screen language's country, else the
+TMDB region's, else the US's: *16+*, *TV-MA*), then its title in words (the logo on the card may be in another language)
+and its whole story, TMDB's in the TV's language: in the card's width, a longer one across the screen under the card
+and the menu, a longer one still in smaller type. Like Liquid Glass, the menu and the filters take their look from what is under them: by day over a dark photo
 they are drawn as at night (smoked glass, white text); over a light one, as frosted white glass.
 
 The Watchlist tab, after Shows, has your Trakt watchlist, the latest added first, and before it the shows you watch with
