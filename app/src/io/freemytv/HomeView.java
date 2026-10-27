@@ -2940,6 +2940,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int menuCount;
     // 658 wide: beside the wide card at the row's left end, it ends at the content's right edge (CONTENT_R).
     private static final float MENU_W = 658, MENU_ITEM_H = 88, MENU_PAD = 14, MENU_GAP = 6;
+    /** The cards' corners: the menu panel's (its pills' half height and its padding), as Liquid Glass rounds them. */
+    private static final float CARD_R = MENU_ITEM_H / 2 + MENU_PAD;
     /** A rating goes to Trakt this long after the last star pressed (or as the menu closes): one request, not one a press. */
     private static final long RATE_AFTER_MS = 1200;
     private static final String YOUTUBE = "com.google.android.youtube.tv";
@@ -4625,7 +4627,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void drawLightCard(Canvas c, int i) {
         Recs.Pick p = i < cards.size() ? cards.get(i) : null;
         float v = cardFocus.get(i).value, f = Ui.clamp(v), s = 1 + 0.05f * v;
-        float left = cardX[i], bw = cardW[i], bh = L_CARD_H * k, r0 = 18 * k, top = L_CARDS_TOP * k;
+        float left = cardX[i], bw = cardW[i], bh = L_CARD_H * k, r0 = CARD_R * k, top = L_CARDS_TOP * k;
         float over = Math.max(0, cardWide.get(i).value - 1);   // how far its width is stretched past the wide one
         float ch = bh * (1 - CARD_SQUASH * over);   // the body's height; the words below keep their places
         float wide = Ui.clamp((bw - tallW) / (wideW - tallW));
