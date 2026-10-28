@@ -3096,6 +3096,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private Paint ageText;
     private final Paint ageRim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private String aboutLine = "";
+    private String aboutMeta = "";   // the card's details in the menu: every genre (the row's card has the first)
     private StaticLayout aboutLayout;
     private float aboutTitleBase, aboutTop;   // the title's baseline and the story's top (aboutMenu)
     private final RectF menuRect = new RectF();   // the panel at rest, on screen
@@ -3692,7 +3693,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      */
     private void aboutMenu() {
         Recs.Pick p = menuPick;
-        aboutLine = "";
+        aboutLine = aboutMeta = "";
         aboutLayout = null;
         if (p == null || aboutTitle == null) return;
         String title = p.title == null ? "" : p.title.trim(), about = p.about == null ? "" : p.about;
@@ -3701,8 +3702,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float metaBase = (L_CARDS_TOP + L_CARD_H + 46) * k;
         aboutTitleBase = metaBase + 58 * k;
         aboutTop = aboutLine.isEmpty() ? metaBase + 22 * k : aboutTitleBase + 18 * k;
+        // The details with every genre, past the card's width (the panel ends far above): room left for the age rating.
+        CardText words = menuCard < cardWords.length ? cardWords[menuCard] : null;
+        String age = p.age == null ? "" : p.age;
+        float full = (CONTENT_R - MARGIN) * k, ageW = age.isEmpty() ? 0 : ageText.measureText(age) + 36 * k;
+        fitPaint.set(lCardMeta);
+        aboutMeta = TextUtils.ellipsize(withGenres(cardMeta(p), p.genres), fitPaint, full - (words == null ? 0 : words.ratingW) - ageW,
+                TextUtils.TruncateAt.END).toString();
         if (about.isEmpty()) return;
-        float room = h - 36 * k - aboutTop, full = (CONTENT_R - MARGIN) * k;
+        float room = h - 36 * k - aboutTop;
         float[][] tries = {{25, wideW}, {25, full}, {22, full}, {20, full}};   // text size, width
         for (float[] t : tries) {
             aboutText.setTextSize(t[0] * k);   // the layout draws with it: left at the one that fits
@@ -3733,10 +3741,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int ink = menuTone(L_INK, WHITE);
         String age = p.age == null ? "" : p.age;
         if (!age.isEmpty()) {
-            float x = left + t.ratingW + (t.meta.isEmpty() ? 0 : lCardMeta.measureText(t.meta) + 18 * k);
+            float x = left + t.ratingW + (aboutMeta.isEmpty() ? 0 : lCardMeta.measureText(aboutMeta) + 18 * k);
             float pad = 9 * k, boxH = 31 * k, cy = metaBase - Ui.halfCap(lCardMeta);
             tmp.set(x, cy - boxH / 2, x + ageText.measureText(age) + 2 * pad, cy + boxH / 2);
-            if (tmp.right <= left + wideW) {
+            if (tmp.right <= left + (CONTENT_R - MARGIN) * k) {
                 ageRim.setStrokeWidth(2 * k);
                 ageRim.setColor(Ui.alpha(ink, 0.75f));
                 c.drawRoundRect(tmp, 7 * k, 7 * k, ageRim);
@@ -4491,14 +4499,30 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         t.rating = p.rating > 0 ? String.format(Ui.locale(), "%.1f", p.rating) : "";
         fitPaint.set(lCardMeta);
         t.ratingW = t.rating.isEmpty() ? 0 : lCardMeta.getTextSize() * 1.1f + fitPaint.measureText(t.rating) + 22 * k;
-        String meta = p.meta == null ? "" : p.meta;
-        if (away) {
-            String app = Recs.onlyApp(), where = app != null ? Ui.trf("Not on {app}", "app", app) : Ui.tr("Not on the TV's apps");
-            meta = meta.isEmpty() ? where : meta + " · " + where;
-        }
-        t.meta = TextUtils.ellipsize(meta, fitPaint, wideW - t.ratingW, TextUtils.TruncateAt.END).toString();
+        t.meta = TextUtils.ellipsize(cardMeta(p), fitPaint, wideW - t.ratingW, TextUtils.TruncateAt.END).toString();
         t.badge = fresh > 0 ? Ui.plural("plural|one:{n} new episode|other:{n} new episodes", fresh) : "";
         t.badgeW = t.badge.isEmpty() ? 0 : Math.min(lBadge.measureText(t.badge), tallW - 76 * k);
+    }
+
+    /** A card's details, uncut: a search's answer or a watchlist's title Filmix (or the TV's apps) hasn't says so. */
+    private String cardMeta(Recs.Pick p) {
+        String meta = p.meta == null ? "" : p.meta;
+        if (!recs.away(p)) return meta;
+        String app = Recs.onlyApp(), where = app != null ? Ui.trf("Not on {app}", "app", app) : Ui.tr("Not on the TV's apps");
+        return meta.isEmpty() ? where : meta + " · " + where;
+    }
+
+    /** The details with `genres` (all of a title's, "драма, комедия") where they have its first. */
+    private static String withGenres(String meta, String genres) {
+        int comma = genres == null ? -1 : genres.indexOf(", ");
+        if (comma < 0) return meta;
+        String[] parts = meta.split(" · ", -1);
+        for (int i = 0; i < parts.length; i++) {
+            if (!parts[i].equals(genres.substring(0, comma))) continue;
+            parts[i] = genres;
+            return String.join(" · ", parts);
+        }
+        return meta;
     }
 
     /** The row can't go further that way: it gives a little, then springs back (tvOS). */
@@ -4862,7 +4886,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // No title under the card (its logo says it, and the menu in words): the details always have the same line (under
         // a title that went when the logo came, they jumped up).
         float details = smoothstep(0.55f, 1, wide) * rowA;
-        if (details < 0.01f || (t.meta.isEmpty() && t.rating.isEmpty())) return;
+        String meta = cardOverMenu ? aboutMeta : t.meta;
+        if (details < 0.01f || (meta.isEmpty() && t.rating.isEmpty())) return;
         float metaBase = top + bh + 46 * k, x = left;
         int metaColor = lCardMeta.getColor();
         // Under the menu's card, on its shadow over the dimmed copy, the row's ink is lost: the menu's, dark or white.
@@ -4880,7 +4905,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawText(t.rating, x + size + 6 * k, metaBase, lCardMeta);
             x += t.ratingW;
         }
-        if (!t.meta.isEmpty()) c.drawText(t.meta, x, metaBase, lCardMeta);
+        if (!meta.isEmpty()) c.drawText(meta, x, metaBase, lCardMeta);
         lCardMeta.clearShadowLayer();
         lCardMeta.setColor(metaColor);
     }

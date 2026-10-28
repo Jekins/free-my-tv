@@ -59,6 +59,7 @@ final class Recs {
         float rating;           // Trakt's average for its picks, else TMDB's (0 to 10); 0 = too few votes to say
         String about;           // TMDB's overview in the TV's language ("" when it has none); null until asked (about)
         String age;             // its age rating ("16+", "TV-MA"; see age), "" when none says; null until asked
+        String genres;          // every genre, in TMDB's order ("драма, комедия"; meta has the first); null until asked
         boolean detailed;
         boolean searched;       // only a search's answer: its photo goes to a folder of its own, not the rows'
         boolean nowhere;        // none of the TV's apps has it (with Filmix: Filmix said so): only the watchlist shows it
@@ -2060,6 +2061,7 @@ final class Recs {
         p.title = title(p, o);
         p.about = o.optString("overview", "").trim();
         p.age = age(p.kind, o);
+        p.genres = genres(o);
         String origField = p.kind.equals("movie") ? "original_title" : "original_name";
         String orig = o.optString(origField, "");
         if (!orig.isEmpty()) p.originalTitle = orig;
@@ -2140,18 +2142,19 @@ final class Recs {
     }
 
     /**
-     * Main thread: the title's overview and age rating from TMDB, for one saved before they were kept; `done` runs on the
-     * main thread once they're in. Nothing when it has them.
+     * Main thread: the title's overview, age rating and genres from TMDB, for one saved before they were kept; `done` runs
+     * on the main thread once they're in. Nothing when it has them.
      */
     void about(Pick p, Runnable done) {
-        if (p.about != null || p.id <= 0 || !hasKey(context)) return;
+        if ((p.about != null && p.genres != null) || p.id <= 0 || !hasKey(context)) return;
         searchDetails.execute(() -> {
             try {
                 JSONObject o = get("/" + p.kind + "/" + p.id + "?language=" + lang() + "&append_to_response=" + ages(p.kind));
-                String about = o.optString("overview", "").trim(), age = age(p.kind, o);
+                String about = o.optString("overview", "").trim(), age = age(p.kind, o), genres = genres(o);
                 main.post(() -> {
                     p.about = about;
                     p.age = age;
+                    p.genres = genres;
                     io.execute(this::save);
                     done.run();
                 });
@@ -2178,6 +2181,17 @@ final class Recs {
         } catch (Exception e) {
             return own;
         }
+    }
+
+    /** Every genre of a title's TMDB details, in its order: "драма, комедия" ("" without any). */
+    private static String genres(JSONObject o) {
+        JSONArray a = o.optJSONArray("genres");
+        List<String> names = new ArrayList<>();
+        for (int i = 0; a != null && i < a.length(); i++) {
+            String name = a.optJSONObject(i) == null ? "" : a.optJSONObject(i).optString("name");
+            if (!name.isEmpty()) names.add(genre(name));
+        }
+        return String.join(", ", names);
     }
 
     /** TV genres that TMDB returns in English even in other languages (pt-BR, es, de…). */
@@ -2535,6 +2549,7 @@ final class Recs {
     private static JSONObject json(Pick p) throws org.json.JSONException {
         JSONObject o = new JSONObject();
         if (p.about != null) o.put("about", p.about).put("age", p.age == null ? "" : p.age);   // absent: asked when needed
+        if (p.genres != null) o.put("genres", p.genres);
         return o.put("id", p.id).put("kind", p.kind).put("title", p.title)
                 .put("original", p.originalTitle == null ? "" : p.originalTitle).put("year", p.year)
                 .put("rating", (double) p.rating).put("backdrop", p.backdrop == null ? "" : p.backdrop)
@@ -2558,6 +2573,7 @@ final class Recs {
             p.rating = (float) o.optDouble("rating", 0);
             p.about = o.has("about") ? o.optString("about") : null;
             p.age = o.has("about") ? o.optString("age") : null;
+            p.genres = o.has("genres") ? o.optString("genres") : null;
             p.backdrop = o.optString("backdrop").isEmpty() ? null : o.optString("backdrop");
             p.logo = o.optString("logo").isEmpty() ? null : o.optString("logo");
             p.link = o.optString("link").isEmpty() ? null : o.optString("link");
