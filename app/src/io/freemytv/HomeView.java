@@ -4364,10 +4364,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         // The other rows' first cards too: switching tabs is instant. Not while searching: the answers' photos have the
         // room (Recs keeps 12 ready), and the tab's come back with it.
+        otherFirst.clear();
         for (String other : searchOpen ? new String[0] : TAB_KIND) {
             if (other == kind) continue;
             List<Recs.Pick> first = recs.now(other);
             for (int i = 0; i < Math.min(Recs.FIRST, first.size()); i++) recs.backdrop(first.get(i));
+            if (!first.isEmpty()) otherFirst.add(first.get(0));
         }
         searchEmpty = searchMessage();
         // Picks bring their own background (the focused card's, fading in); without them (no TMDB key), your photo if
@@ -4403,37 +4405,35 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** The focused card's photo becomes the background, fading in (from the main loop, after the key that moved it). */
     private void backgroundFromFocus() {
         if (!running || !picksOn() || cardIndex >= cards.size()) return;
+        // Not whole yet (only its card's part was kept): Recs builds its background first of all (preload) and notifies.
         Backdrop b = recs.whole(cards.get(cardIndex), false);
-        handler.removeCallbacks(wholeSoon);
         if (b != null) showBackdrop(b);
-        else handler.postDelayed(wholeSoon, 600);
         preload();
     }
 
     /**
-     * The focused card kept only its card's part (scrolled past before): its background is built again once the focus
-     * stays 0.6 s (passing over twenty such cards queued twenty builds, 0.45 s each); Recs notifies, and it fades in.
-     */
-    private final Runnable wholeSoon = this::focusedWhole;
-
-    private void focusedWhole() {
-        if (running && picksOn() && cardIndex < cards.size()) recs.whole(cards.get(cardIndex), true);
-    }
-
-    /**
-     * Around the focus, three cards back and four on, the images load before they come into view (nearest first), and
-     * keep their whole backdrops (the next background is one of them). On every move: drawn only once on screen, the card
-     * coming in at the left edge was gray until its photo came.
+     * Around the focus, three cards back and four on, the images load before they come into view, and keep their whole
+     * backdrops (the next background is one of them), the focused one first, then the nearest. On every move: drawn only
+     * once on screen, the card coming in at the left edge was gray until its photo came; and the background, built only
+     * once the focus stopped, came a second or two late.
      */
     private void preload() {
         if (cards.isEmpty()) return;
         int at = Math.min(cardIndex, cards.size() - 1);
-        recs.keepWhole(cards.subList(Math.max(0, at - 3), Math.min(cards.size(), at + 5)));
+        near.clear();
         for (int d = 0; d <= 4; d++) {
-            if (at + d < cards.size()) recs.backdrop(cards.get(at + d));
-            if (d > 0 && d <= 3 && at - d >= 0) recs.backdrop(cards.get(at - d));
+            if (at + d < cards.size()) near.add(cards.get(at + d));
+            if (d > 0 && d <= 3 && at - d >= 0) near.add(cards.get(at - d));
         }
+        int row = near.size();
+        near.addAll(otherFirst);   // last, the other tabs' first cards: a tab's row opens on it, its background ready
+        recs.keepWhole(near);
+        for (int i = 0; i < row; i++) recs.backdrop(near.get(i));
     }
+
+    private final List<Recs.Pick> near = new ArrayList<>();
+    /** Each other tab's first card (updateCards): switching tabs, the row opens on it. */
+    private final List<Recs.Pick> otherFirst = new ArrayList<>();
 
     /** Springs, places and words for `n` slots; `reset` puts the row at rest at once (another tab, a new list). */
     private void setSlots(int n, boolean reset) {

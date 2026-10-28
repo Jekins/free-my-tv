@@ -436,12 +436,23 @@ final class Recs {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
     // Built and ready to draw, least recently drawn first: a card on screen never loses its photo. With the light design,
-    // only the cards around the focus keep their whole backdrop (the background's versions too, ~6 MB); the others only
-    // what a card draws (Backdrop.cardOnly, ~3 MB), so twice as many cards scrolled past stay ready.
+    // the cards around the focus keep their whole backdrop (the background's versions too); the others, past MAX_WHOLE,
+    // only what a card draws (Backdrop.cardOnly), so more cards scrolled past stay ready.
     private final Map<String, Backdrop> images = new LinkedHashMap<>(16, 0.75f, true);
     private final java.util.Set<String> pending = new java.util.HashSet<>();
     private final java.util.Set<String> keepWhole = new java.util.HashSet<>();
     private static final int KEPT = 40;
+    /**
+     * The cards around the focus by how soon each may be the background (the focused one first, then the nearest): those
+     * kept only as their card's part get the background's versions again in this order, on a thread of their own, so
+     * the focus finds its background ready when it stops. A whole backdrop stays while at most MAX_WHOLE are, the least
+     * recently drawn away from the focus going back to the card's part first.
+     */
+    private final List<Pick> wholeOrder = new ArrayList<>();
+    private final java.util.Set<String> wholeFailed = new java.util.HashSet<>();
+    private final ExecutorService wholeIo = Executors.newSingleThreadExecutor();
+    private boolean promoting;
+    private static final int MAX_WHOLE = 14;
     private volatile List<Pick> picks = new ArrayList<>();
     /** Filmix: the titles not looked up yet, in Trakt's (or TMDB's) order; picks takes them as the rows need them. */
     private final List<Pick> queue = new ArrayList<>();
@@ -1165,17 +1176,129 @@ final class Recs {
         return null;
     }
 
-    /** The cards around the focus (the next background is one of them): their backdrops stay whole. Main thread. */
-    void keepWhole(List<Pick> around) {
+    /**
+     * The cards around the focus, the focused one first, then by distance (the next background is one of them): their
+     * backdrops stay whole, and those kept only as their card's part are made whole again in that order. Main thread.
+     */
+    void keepWhole(List<Pick> near) {
         synchronized (images) {
             keepWhole.clear();
-            for (int i = 0; i < around.size(); i++) if (around.get(i).backdrop != null) keepWhole.add(around.get(i).backdrop);
+            wholeOrder.clear();
+            wholeFailed.clear();
+            for (int i = 0; i < near.size(); i++) {
+                Pick p = near.get(i);
+                if (p.backdrop == null) continue;
+                keepWhole.add(p.backdrop);
+                wholeOrder.add(p);
+            }
+            promoteSoon();
         }
+    }
+
+    /** Under the images lock: promote() runs, unless it is running already. */
+    private void promoteSoon() {
+        if (!light || promoting) return;
+        promoting = true;
+        wholeIo.execute(this::promote);
+    }
+
+    /**
+     * Loads keepWhole's cards, or makes them whole again, nearest the focus first (wholeOrder: it changes on every move),
+     * until none is left. A queue in order of asking had the card the focus stopped on, after a fast run into titles not
+     * loaded yet, wait for every card passed on the way (ten downloads, four seconds).
+     */
+    private void promote() {
+        while (true) {
+            Pick next = null;
+            synchronized (images) {
+                for (int i = 0; i < wholeOrder.size() && next == null; i++) {
+                    Pick p = wholeOrder.get(i);
+                    if (wholeFailed.contains(p.backdrop) || pending.contains(p.backdrop)) continue;
+                    Backdrop b = images.get(p.backdrop);
+                    if (b == null || (b.card != null && !b.whole())) next = p;
+                }
+                if (next == null) {
+                    promoting = false;
+                    return;
+                }
+                pending.add(next.backdrop);
+            }
+            boolean ok = false;
+            try {
+                ok = loadImage(next);
+            } finally {
+                synchronized (images) {
+                    pending.remove(next.backdrop);
+                    if (!ok) wholeFailed.add(next.backdrop);
+                }
+            }
+        }
+    }
+
+    /**
+     * The background's versions again for a backdrop kept only as its card's part, from the photo on disk (Backdrop.with:
+     * its card, light and logo stay as they are, nothing is uploaded again). False if it failed.
+     */
+    private boolean addBackground(Pick p) {
+        File f = imageFile(p);
+        long start = System.nanoTime();
+        try {
+            download(p);
+            Backdrop bg = Backdrop.background(decode(f));
+            AppLog.w("background “" + p.title + "”: " + (System.nanoTime() - start) / 1_000_000 + " ms");
+            synchronized (images) {
+                Backdrop part = images.get(p.backdrop);
+                if (part == null || part.card == null || part.whole() || !light) return true;   // gone or done meanwhile
+                images.put(p.backdrop, part.with(bg));
+                demote();
+            }
+            notifyListeners();
+            return true;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            AppLog.w("recommendation background: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Past MAX_WHOLE whole backdrops, the least recently drawn ones away from the focus keep only their card's part (a
+     * cap, not the focus's window itself: going back and forth at its edge doesn't build the same background again).
+     * Under the images lock.
+     */
+    private void demote() {
+        int whole = 0;
+        for (Backdrop b : images.values()) if (b.card != null && b.whole()) whole++;
+        for (Map.Entry<String, Backdrop> e : images.entrySet()) {
+            if (whole <= MAX_WHOLE) return;
+            Backdrop kept = e.getValue();
+            if (kept.card == null || !kept.whole() || keepWhole.contains(e.getKey())) continue;
+            e.setValue(kept.cardOnly());
+            whole--;
+        }
+    }
+
+    /** The photo on disk, at least the UI's width (halved while it stays so). */
+    private static Bitmap decode(File f) throws IOException {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(f.getPath(), bounds);
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inSampleSize = 1;
+        while (bounds.outWidth / (opts.inSampleSize * 2) >= Backdrop.W) opts.inSampleSize *= 2;
+        Bitmap b = BitmapFactory.decodeFile(f.getPath(), opts);
+        if (b == null) throw new IOException("unreadable image");
+        return b;
     }
 
     private void load(Pick p) {
         final String key = p.backdrop;    // the details may swap the image midway
         synchronized (images) {
+            if (light && keepWhole.contains(key)) {   // near the focus: in its turn, nearest first (promote)
+                promoteSoon();
+                return;
+            }
             if (!pending.add(key)) return;
         }
         io.execute(() -> {
@@ -2202,7 +2325,9 @@ final class Recs {
 
     private void download(Pick p) throws IOException {
         if (p.backdrop == null) return;   // TMDB has no image for it: the card shows without one
-        fetch(IMAGES + p.backdrop, imageFile(p), p.searched ? 16 : 24);
+        // More photos than cards kept ready (KEPT): one kept only as its card's part builds its background from here,
+        // never from the network (24 kept, a card scrolled far back waited for a new download, a second or two).
+        fetch(IMAGES + p.backdrop, imageFile(p), p.searched ? 24 : 64);
     }
 
     /** Saves `url` as `f` unless it's there already; its folder keeps its newest `keep` files. */
@@ -2229,29 +2354,28 @@ final class Recs {
         prune(f.getParentFile(), keep);
     }
 
-    /** Reads the photo (≥ the UI's width) and builds the backdrop (Backdrop: cards plus frosted and glass versions). */
-    private void loadImage(Pick p) {
+    /**
+     * Reads the photo (≥ the UI's width) and builds the backdrop (Backdrop: cards plus frosted and glass versions). False
+     * if it failed.
+     */
+    private boolean loadImage(Pick p) {
+        boolean cardOnly;
         synchronized (images) {
             Backdrop had = images.get(p.backdrop);
-            if (had != null && had.whole()) return;
+            if (had != null && had.whole()) return true;
+            cardOnly = had != null && had.card != null && light;
         }
+        if (cardOnly) return addBackground(p);   // only its card's part: the background's versions are all it lacks
         File f = imageFile(p);
         try {
             download(p);
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(f.getPath(), bounds);
-            BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inSampleSize = 1;
-            while (bounds.outWidth / (opts.inSampleSize * 2) >= Backdrop.W) opts.inSampleSize *= 2;
-            Bitmap b = BitmapFactory.decodeFile(f.getPath(), opts);
-            if (b == null) throw new IOException("unreadable image");
-            AppLog.w("backdrop \u201c" + p.title + "\u201d: " + bounds.outWidth + "×" + bounds.outHeight + " → " + Backdrop.W + "×" + Backdrop.H);
+            Bitmap b = decode(f);
+            AppLog.w("backdrop \u201c" + p.title + "\u201d: " + b.getWidth() + "×" + b.getHeight() + " → " + Backdrop.W + "×" + Backdrop.H);
             boolean forLight = light;
             Bitmap logo = forLight ? loadLogo(p) : null;   // only the cards show it
             Backdrop backdrop = Backdrop.make(b, forLight, false, logo != null);
             backdrop.logo = logo;
-            if (forLight != light) return;   // the design changed midway: this one is stale
+            if (forLight != light) return true;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
                 // The row's cards around the focus (8) and the other tabs' first ones (3 × FIRST), with room for the ones
@@ -2259,17 +2383,16 @@ final class Recs {
                 // (it was 12), each new one pushed out one still wanted, which loaded again and pushed out the next: seven
                 // titles were rebuilt in a loop, one every 0.45 s, and cards scrolled past came back empty.
                 while (images.size() > (forLight ? KEPT : 4)) images.remove(images.keySet().iterator().next());
-                // Away from the focus, only the card's part stays (its background is built again if the focus stops there).
-                for (Map.Entry<String, Backdrop> e : images.entrySet()) {
-                    Backdrop kept = e.getValue();
-                    if (kept.card != null && kept.whole() && !keepWhole.contains(e.getKey())) e.setValue(kept.cardOnly());
-                }
+                // Away from the focus, only the card's part stays (its background is built again as the focus nears it).
+                demote();
             }
             notifyListeners();
+            return true;
         } catch (IOException | RuntimeException | OutOfMemoryError e) {
             //noinspection ResultOfMethodCallIgnored
             f.delete();
             AppLog.w("recommendation image: " + e.getMessage());
+            return false;
         }
     }
 

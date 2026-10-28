@@ -85,11 +85,34 @@ final class Backdrop {
         nightImage = nightBg == null ? null : Bitmap.createBitmap(nightBg, bw, bh, Bitmap.Config.ARGB_8888);
     }
 
+    /** `part`'s card (cardOnly()) with `bg`'s background versions (background()): whole again, nothing made anew. */
+    private Backdrop(Backdrop part, Backdrop bg) {
+        image = null;
+        frost = bg.frost;
+        glass = null;
+        card = part.card;
+        cardShader = part.cardShader;
+        ambient = part.ambient;
+        ambientShader = part.ambientShader;
+        light = bg.light;
+        lightGlass = bg.lightGlass;
+        nightFrost = bg.nightFrost;
+        nightGlass = bg.nightGlass;
+        lightImage = bg.lightImage;
+        nightImage = bg.nightImage;
+        logo = part.logo;
+    }
+
     /** Only what a card draws (its photo, logo and light), without the background's versions: one scrolled past. */
     Backdrop cardOnly() {
         Backdrop b = new Backdrop(null, null, null, card, ambient, null, null, null, null);
         b.logo = logo;
         return b;
+    }
+
+    /** This card's part with the background's versions built again from its photo (background()). */
+    Backdrop with(Backdrop bg) {
+        return new Backdrop(this, bg);
     }
 
     /** False for cardOnly(): it can't be the background. */
@@ -107,12 +130,30 @@ final class Backdrop {
      * right, so it still reads as your photo. The glass and the drawer stay as they are. `shade`: the card's photo
      * darkens toward its bottom, under the title's logo (card()).
      */
-    static Backdrop make(Bitmap src, boolean forLight, boolean own, boolean shade) {
-        // Cropped to 16:9 at the source's resolution first, then filtered down (no step over 2×).
+    /**
+     * Only the background's versions of a pick's photo, as make() builds them for the light design (no card, light or
+     * logo): for a backdrop kept as cardOnly() when the focus comes back near it (with()), in a fraction of make()'s time.
+     */
+    static Backdrop background(Bitmap src) {
+        Bitmap out = fit(src);
+        int[] frost = reduce(out, FW, FH, 3, 3);
+        int[] glass = reduce(out, GW, GH, 2, 2);
+        out.recycle();
+        return new Backdrop(null, frost, null, null, null, whiten(frost.clone(), 0.82f), whiten(glass.clone(), 0.74f),
+                darken(frost.clone(), 0.76f), darken(glass, 0.56f));
+    }
+
+    /** Cropped to 16:9 at the source's resolution first, then filtered down to the UI's size (no step over 2×). */
+    private static Bitmap fit(Bitmap src) {
         Bitmap crop = center(src, (float) W / H);
         if (crop != src) src.recycle();
         Bitmap out = Ui.downscale(crop, W, H);
         if (out != crop) crop.recycle();
+        return out;
+    }
+
+    static Backdrop make(Bitmap src, boolean forLight, boolean own, boolean shade) {
+        Bitmap out = fit(src);
         if (!out.isMutable()) {
             Bitmap copy = out.copy(Bitmap.Config.ARGB_8888, true);
             out.recycle();
