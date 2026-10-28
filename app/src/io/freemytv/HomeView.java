@@ -260,6 +260,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final android.graphics.PorterDuffColorFilter whiteLogo =
             new android.graphics.PorterDuffColorFilter(0xFFFFFFFF, android.graphics.PorterDuff.Mode.SRC_IN);
     private final RectF platterRect = new RectF();
+    private final Rect layerClip = new Rect();
     private int shelfIndex;
     /** The first app the shelf shows: with more apps than fit, it scrolls with the focus. */
     private int shelfFirst;
@@ -1114,6 +1115,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (text.equals(sleepText)) return;
         sleepText = text;
         statusDirty = heroDirty = true;   // the quotes end before it
+        clipLayers();
     }
 
     private boolean updateClock() {
@@ -1578,6 +1580,37 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             x += tw + gap;
         }
         crispLogos.clear();
+        clipLayers();
+    }
+
+    /**
+     * The dock's and the round buttons' layers span the screen, what they draw only part of it: each is cut to that (with
+     * room for shadows and focus). This TV's driver lacks EGL_EXT_buffer_age, so every frame composes the whole screen,
+     * every layer to its edges: on a dock of three apps, the clear rest was half a screen of GPU fill on each frame.
+     */
+    private void clipLayers() {
+        if (w == 0 || lTip == null) return;
+        // The dock's glass with its shadow, and its tiles: the edge ones grown in focus (lifted to move, a little more).
+        float bw = tileRects.length > 0 ? tileRects[0].width() : 0;
+        float m = Math.max(2 * SHADOW_BLUR * k, (FOCUS_GROW + LIFT_GROW) / 2 * bw + 2.5f * DEEP_BLUR * k);
+        layerClip.set((int) Math.max(0, platterRect.left - m), 0, (int) Math.min(w, Math.ceil(platterRect.right + m)), h);
+        platter.setClipBounds(layerClip);
+        tiles.setClipBounds(layerClip);
+        // The round buttons, grown in focus with their shadows and names below, and the sleep timer before them.
+        float left = w;
+        for (int i = 0; i < lightButtons.size(); i++) {
+            RectF r = topRects[TABS + i];
+            float half = lTip.measureText(lightButtons.get(i).label) / 2;
+            left = Math.min(left, r.left - 0.05f * r.width() - 2 * SHADOW_BLUR * k);
+            left = Math.min(left, Math.min(r.centerX(), CONTENT_R * k - half) - half - 4 * k);
+        }
+        if (!sleepText.isEmpty()) {
+            float right = (lightButtons.isEmpty() ? CONTENT_R * k : topRects[TABS].left) - 28 * k;
+            left = Math.min(left, right - lQuote.measureText(sleepText) - 1.5f * lQuote.getTextSize());
+        }
+        int x = w - Math.round(1160 * k);   // where the layer starts (onLayout)
+        layerClip.set((int) Math.max(0, left - x), 0, w - x, h);
+        status.setClipBounds(layerClip);
     }
 
     /** Scrolls the shelf, one app at a time, so the focused app is shown: the tiles slide there (unless `snap`). */
@@ -4261,6 +4294,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             topRects[TABS + i].set(right - b, cy - b / 2, right, cy + b / 2);
             right -= b + L_BUTTON_GAP * k;
         }
+        clipLayers();
         // The open field grows from the magnifier, short of the round buttons (and the quotes or the sleep timer before them).
         float limit = (lightButtons.isEmpty() ? CONTENT_R * k : topRects[TABS].left) - 60 * k;
         fieldRect.set(searchRect.left, tabTop, Math.min(searchRect.left + SEARCH_FIELD_W * k, limit), tabBottom);
