@@ -304,7 +304,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private RectF[] drawerRects = new RectF[0];
     private final RectF weatherCard = new RectF(), quotesCard = new RectF();
     private final Spring drawer = new Spring(0.46f, 0.92f, 0);
-    private boolean drawerOpen;
+    private boolean drawerOpen, heroOnDock = true;
     private int drawerIndex;
 
     // "All Apps" sheet
@@ -518,7 +518,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Hardware layers on the GPU: only the one that changed is redrawn; moving, fading and scaling stay cheap.
         // Not on Android 8 to 11: on older GPUs (a Mi Box 3's Mali-450) redrawing and compositing a big layer on every
         // frame cost more than drawing straight to the screen (measured: focus on the picks 33 → 12 ms a frame, the
-        // drawer 19 → 17 ms).
+        // drawer 19 → 17 ms). The tabs and the row keep theirs only part of the time (cacheHero).
         for (View v : new View[] {skyImages, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer, menuGlass, menuItemsLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
         for (View v : new View[] {sky, skyImages, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuSharpLayer, menuLayer,
                 menuGlass, menuItemsLayer, toastLayer}) {
@@ -1011,7 +1011,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // they rise; the drawer is drawn resting in place; the shelf's glass is clear (nothing to redraw as it moves).
         if (tilesMoving || tilesDirty) tiles.invalidate();
         if (statusMoving || statusDirty) status.invalidate();
-        if (heroMoving || heroDirty || heroFading) heroLayer.invalidate();
+        boolean heroRedrawn = heroMoving || heroDirty || heroFading;
+        if (heroRedrawn) heroLayer.invalidate();
+        cacheHero(heroRedrawn);
         if (drawerItemsMoving || drawerDirty || drawerGlass) drawerLayer.invalidate();
         if (gridMoving || gridDirty) sheetLayer.invalidate();
         if (drawerMoving || bgFading) {
@@ -1082,6 +1084,21 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float scale = 1.04f - 0.04f * s;
         sheetLayer.setScaleX(scale);
         sheetLayer.setScaleY(scale);
+    }
+
+    /**
+     * The tabs and the row in a layer (cached pixels) only where that pays: while the drawer or the sheet moves and fades
+     * them, and while the focus rests on the dock, where those open. Elsewhere the row redraws on every frame its focus
+     * moves, and a layer redrawn on every frame cost this TV's GPU a pass of its own on top (the arrow held: 56 → 58
+     * frames a second, late frames 5% → 3%): there they are drawn straight to the screen.
+     */
+    private void cacheHero(boolean redrawn) {
+        if (Ui.LEGACY) return;
+        if (zone != Z_SHELF) heroOnDock = false;
+        else if (!redrawn) heroOnDock = true;   // once the row is still (a card's focus fading as it left), until it leaves
+        boolean layer = heroOnDock || drawerOpen || sheetOpen || drawer.value > 0.001f || sheet.value > 0.001f;
+        int type = layer ? LAYER_TYPE_HARDWARE : LAYER_TYPE_NONE;
+        if (heroLayer.getLayerType() != type) heroLayer.setLayerType(type, null);
     }
 
     private static void show(View v, float alpha, float translationY) {
