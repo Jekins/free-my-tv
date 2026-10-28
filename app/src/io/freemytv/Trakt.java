@@ -17,7 +17,9 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Trakt API client: personal recommendations and the person's own lists (OAuth), public user lists and search (client
@@ -61,6 +63,7 @@ final class Trakt {
 
     private static final String API = "https://api.trakt.tv";
     private static final String AUTH = "https://auth.trakt.tv";
+    private static final int PAGE = 250;    // items a page of a paginated list: the most Trakt gives
     private static final Object LOCK = new Object();
 
     private static Context app;
@@ -273,42 +276,75 @@ final class Trakt {
     }
 
     /**
-     * The shows with new episodes for the signed-in person: of the 20 they watched last (within 3 years), the ones whose
-     * next unwatched episode came out after they last watched, within the past year (an older one is a show left behind,
-     * not news). Its progress per show (one request each); the newest first. Throws when Trakt can't be asked.
+     * What the signed-in person has watched, as Trakt has it: the movies and the shows they saw every aired episode of
+     * (TMDB ids; a new episode out, the show is no longer among them), and the shows with new episodes for them.
      */
-    static List<Unwatched> newEpisodes(long now) throws IOException {
-        JSONArray watched;
+    static final class Watched {
+        final Set<Integer> movies = new HashSet<>(), shows = new HashSet<>();
+        final List<Unwatched> fresh = new ArrayList<>();
+    }
+
+    /**
+     * What the person has watched: their movies, and their shows, one seen through when its episodes' plays reach the
+     * ones aired and it was never started over (Trakt's answer no longer lists the episodes; one watched twice counts
+     * twice). Then the progress of the 20 shows watched last (one request each), which says exactly whether those are
+     * seen through, and which have new episodes: the ones (within 3 years) whose next unwatched episode came out after
+     * they last watched, within the past year (an older one is a show left behind, not news), the newest first. Throws
+     * when Trakt can't be asked.
+     */
+    static Watched watched(long now) throws IOException {
+        Watched w = new Watched();
+        List<JSONObject> shows;
         try {
-            watched = getArray("/sync/watched/shows?extended=noseasons", true);
+            for (JSONObject o : pages("/sync/watched/movies")) {
+                Item item = parseItem(o, "movie");
+                if (item != null) w.movies.add(item.tmdbId);
+            }
+            shows = pages("/sync/watched/shows?extended=noseasons");
         } catch (org.json.JSONException e) {
-            throw new IOException("Trakt watched shows: " + e.getMessage());
+            throw new IOException("Trakt watched: " + e.getMessage());
         }
-        List<JSONObject> shows = new ArrayList<>();
-        for (int i = 0; i < watched.length(); i++) if (watched.optJSONObject(i) != null) shows.add(watched.optJSONObject(i));
+        for (JSONObject o : shows) {
+            Item item = parseItem(o, "show");
+            JSONObject show = o.optJSONObject("show");
+            int aired = show == null ? 0 : show.optInt("aired_episodes");
+            if (item != null && aired > 0 && o.optInt("plays") >= aired && instant(o.optString("reset_at")) == 0) {
+                w.shows.add(item.tmdbId);
+            }
+        }
         java.util.Collections.sort(shows, (a, b) -> b.optString("last_watched_at").compareTo(a.optString("last_watched_at")));
-        List<Unwatched> out = new ArrayList<>();
         long year = 365L * 24 * 3600_000L;
         for (int i = 0; i < Math.min(20, shows.size()); i++) {
             JSONObject o = shows.get(i);
             if (now - instant(o.optString("last_watched_at")) > 3 * year) break;
             Item item = parseItem(o, "show");
-            JSONObject show = o.optJSONObject("show"), ids = show == null ? null : show.optJSONObject("ids");
-            int traktId = ids == null ? 0 : ids.optInt("trakt");
-            if (item == null || traktId <= 0) continue;
+            if (item == null || item.traktId <= 0) continue;
             try {
-                JSONObject p = new JSONObject(get("/shows/" + traktId + "/progress/watched", true));
+                JSONObject p = new JSONObject(get("/shows/" + item.traktId + "/progress/watched", true));
                 int unseen = p.optInt("aired") - p.optInt("completed");
+                if (p.optInt("aired") > 0 && unseen > 0) w.shows.remove(item.tmdbId);
+                else if (p.optInt("aired") > 0) w.shows.add(item.tmdbId);
                 JSONObject next = p.optJSONObject("next_episode");
                 long aired = next == null ? 0 : instant(next.optString("first_aired")), seen = instant(p.optString("last_watched_at"));
                 if (p.optInt("completed") > 0 && unseen > 0 && aired > seen && aired <= now && now - aired < year) {
-                    out.add(new Unwatched(item, unseen, aired));
+                    w.fresh.add(new Unwatched(item, unseen, aired));
                 }
             } catch (IOException | org.json.JSONException e) {
-                AppLog.w("Trakt progress " + traktId + ": " + e.getMessage());
+                AppLog.w("Trakt progress " + item.traktId + ": " + e.getMessage());
             }
         }
-        java.util.Collections.sort(out, (a, b) -> Long.compare(b.since, a.since));
+        java.util.Collections.sort(w.fresh, (a, b) -> Long.compare(b.since, a.since));
+        return w;
+    }
+
+    /** Every item of a list Trakt answers in pages (its sync lists too: 100 at a time unless asked for more); 50 at most. */
+    private static List<JSONObject> pages(String path) throws IOException, org.json.JSONException {
+        List<JSONObject> out = new ArrayList<>();
+        int[] count = {1};
+        for (int page = 1; page <= count[0] && page <= 50; page++) {
+            JSONArray a = new JSONArray(get(path + (path.contains("?") ? "&" : "?") + "page=" + page + "&limit=" + PAGE, true, count));
+            for (int i = 0; i < a.length(); i++) if (a.optJSONObject(i) != null) out.add(a.optJSONObject(i));
+        }
         return out;
     }
 
@@ -625,18 +661,23 @@ final class Trakt {
 
     /** The answer's text; with `oauth`, a refused token is refreshed once and the request made again. */
     private static String get(String path, boolean oauth) throws IOException {
+        return get(path, oauth, null);
+    }
+
+    /** The same, with how many pages the list has (Trakt's X-Pagination-Page-Count; 1 if it doesn't say) into `pages`. */
+    private static String get(String path, boolean oauth, int[] pages) throws IOException {
         String clientId = Config.TRAKT_CLIENT_ID.trim();
         if (clientId.isEmpty()) throw new IOException("no Trakt client ID");
         String token = oauth ? access(false) : "";
         try {
-            return getOnce(path, clientId, token);
+            return getOnce(path, clientId, token, pages);
         } catch (IOException e) {
             if (!oauth || e.getMessage() == null || !e.getMessage().contains("HTTP 401")) throw e;
-            return getOnce(path, clientId, access(true));
+            return getOnce(path, clientId, access(true), pages);
         }
     }
 
-    private static String getOnce(String path, String clientId, String token) throws IOException {
+    private static String getOnce(String path, String clientId, String token, int[] pages) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(API + path).openConnection();
         c.setConnectTimeout(8000);
         c.setReadTimeout(12000);
@@ -650,6 +691,7 @@ final class Trakt {
             if (code == 401 || code == 403) throw new IOException("Trakt rejected credentials (HTTP " + code + ")");
             if (code == 404) throw new IOException("Trakt not found (HTTP 404): " + path);
             if (code != 200) throw new IOException("Trakt returned HTTP " + code);
+            if (pages != null) pages[0] = c.getHeaderFieldInt("X-Pagination-Page-Count", 1);
             return read(c.getInputStream());
         } finally {
             c.disconnect();

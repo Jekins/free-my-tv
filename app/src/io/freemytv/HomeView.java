@@ -931,11 +931,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean statusMoving = step(statusFocus, dt);
         boolean heroMoving = heroFocus.step(dt);
         boolean topMoving = step(topFocus, dt) | tabPillX.step(dt) | tabPillW.step(dt);
-        // The menu has faded: a title hidden from it leaves the row, and the row slides back.
+        // The menu has faded: a title hidden (or marked watched) from it leaves the row, and the row slides back.
         if (!menuOpen && menuWarm == 0 && menu.value <= 0.002f) {
             if (hideAfter != null) recs.hide(hideAfter);
             if (unlistAfter != null) recs.setWatchlisted(unlistAfter, false);
-            hideAfter = unlistAfter = null;
+            if (seenAfter != null) recs.seen(seenAfter);
+            hideAfter = unlistAfter = seenAfter = null;
             menuShift.target = 0;
         }
         // The row: lift, widths, scroll, its shift for the menu and the bump at its end; empty cards pulse while their
@@ -3069,6 +3070,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean menuWaitsRow;   // the screen is copied, and the menu shown, once the row stops there
     private Recs.Pick hideAfter;    // "Don't recommend": it leaves the row once the menu has faded
     private Recs.Pick unlistAfter;  // off the watchlist from the Watchlist tab: it leaves that row once the menu has faded
+    private Recs.Pick seenAfter;    // marked watched: it leaves the rows once the menu has faded
     // The same menu as Explore's filters (OK held on its tab): FilterPanel's panel in the middle of the screen, nothing
     // moving behind it; the row takes its filters as it closes.
     private boolean menuFilters;
@@ -3348,7 +3350,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             menuShift.snap(0);
             if (hideAfter != null) recs.hide(hideAfter);
             if (unlistAfter != null) recs.setWatchlisted(unlistAfter, false);
-            hideAfter = unlistAfter = null;
+            if (seenAfter != null) recs.seen(seenAfter);
+            hideAfter = unlistAfter = seenAfter = null;
         }
         menuDirty = true;
         wake();
@@ -3462,6 +3465,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         click.open();
         if (!stars(p)) {
             watched.add(key);       // once: from now on OK rates
+            seenAfter = p;
             markWatched(p);
         } else {
             rated.put(key, starIndex + 1);   // that many of ten: Trakt's scale as it is
@@ -3485,7 +3489,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
-    /** Sent once (`watched` keeps a second press from sending it again); if Trakt refuses, the item comes back. */
+    /**
+     * Sent once (`watched` keeps a second press from sending it again); the card leaves the rows once the menu has faded.
+     * If Trakt refuses, the item comes back, and the card stays (or comes back).
+     */
     private void markWatched(Recs.Pick p) {
         String key = Recs.key(p), kind = p.kind, title = p.title;
         int id = p.id;
@@ -3493,7 +3500,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             try {
                 Trakt.markWatched(kind, id);
                 handler.post(() -> {
-                    recs.seen(p);
+                    if (seenAfter != p) recs.seen(p);   // gone already: Trakt has it from now on
                     showToast(Ui.trf("Marked as watched on Trakt: {title}", "title", title));
                 });
             } catch (Exception e) {
@@ -3501,6 +3508,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 handler.post(() -> {
                     watched.remove(key);
                     rated.remove(key);
+                    if (seenAfter == p) seenAfter = null;
+                    recs.unseen(p);
                     if (ratePick != null && Recs.key(ratePick).equals(key)) {
                         ratePick = null;
                         handler.removeCallbacks(rateNow);

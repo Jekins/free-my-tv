@@ -493,6 +493,16 @@ final class Recs {
      */
     private volatile Set<String> watchlist = new HashSet<>();
     private volatile Map<String, Integer> newEpisodes = new HashMap<>();
+    /**
+     * Watched, by key, so out of the rows. Trakt's: the movies, and the shows seen through (until a new episode is out),
+     * out of the recommendations but not the watchlist (put back on it after watching: to watch again); replaced whole.
+     * And the ones marked from here (their menu), each with when: out of every row but a search's from the moment the
+     * menu has faded, until an answer of Trakt's asked SETTLE after it has them (its reads can lag its writes). Both
+     * kept with the cache.
+     */
+    private volatile Set<String> watched = new HashSet<>();
+    private final Map<String, Long> marked = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long SETTLE = 5 * 60_000L;
     private volatile boolean watchLoading;
     private volatile long watchAt;
     /** Trakt's watchlist and progress, apart from `io` (~20 requests): the cards' images don't wait for them. */
@@ -555,7 +565,16 @@ final class Recs {
                 fresh.put(key, n.optInt(key));
             }
             newEpisodes = fresh;
-            watchAt = watch.optLong("at");
+            watchAt = watch.has("watched") ? watch.optLong("at") : 0;   // from before watched was kept: asked at once
+            Set<String> seen = new HashSet<>();
+            JSONArray w = watch.optJSONArray("watched");
+            for (int i = 0; w != null && i < w.length(); i++) seen.add(w.optString(i));
+            watched = seen;
+            JSONObject m = watch.optJSONObject("marked");
+            for (java.util.Iterator<String> it = m == null ? null : m.keys(); it != null && it.hasNext(); ) {
+                String key = it.next();
+                marked.put(key, m.optLong(key));
+            }
             // Filtered Explore's titles, if they were fetched for the filter it has now; the watchlist's.
             JSONObject rows = new JSONObject(cache.getString("rows", "{}"));
             for (String kind : new String[] {EXPLORE, WATCHLIST}) {
@@ -659,6 +678,7 @@ final class Recs {
         }
         List<Pick> out = new ArrayList<>();
         for (String k : keys) {
+            if (seenOut(k, kind)) continue;   // never looked up: it mustn't hold the row back
             Pick p = byKey.get(k);
             if (p != null) out.add(p);
             // The ones after it wait too, even if another row confirmed them: looked up, it would land before them
@@ -752,17 +772,39 @@ final class Recs {
         picks = list;
     }
 
-    /** Main thread: marked watched from here, a show has no new episodes left (until Trakt says otherwise). */
+    /**
+     * Main thread: marked watched from its menu, once the menu has faded (and again as Trakt takes it, if that comes
+     * later): out of every row but a search's, a show with no new episodes left; a row left short takes its next title.
+     */
     void seen(Pick p) {
-        if (!newEpisodes.containsKey(key(p))) return;
-        Map<String, Integer> fresh = new HashMap<>(newEpisodes);
-        fresh.remove(key(p));
-        newEpisodes = fresh;
+        String k = key(p);
+        marked.put(k, System.currentTimeMillis());
+        if (newEpisodes.containsKey(k)) {
+            Map<String, Integer> fresh = new HashMap<>(newEpisodes);
+            fresh.remove(k);
+            newEpisodes = fresh;
+        }
+        for (String kind : new String[] {null, "movie", "tv", WATCHLIST}) refill(kind);
         notifyListeners();
         io.execute(this::save);
     }
 
-    /** Main thread: the Watchlist row from Trakt again (its shows with new episodes, then the watchlist), apart from io. */
+    /** Main thread: back in the rows (Trakt refused the mark). */
+    void unseen(Pick p) {
+        if (marked.remove(key(p)) == null) return;
+        notifyListeners();
+        io.execute(this::save);
+    }
+
+    /** Out of the row as watched (see `watched`); a search shows them all. */
+    private boolean seenOut(String key, String kind) {
+        return !SEARCH.equals(kind) && (marked.containsKey(key) || (!WATCHLIST.equals(kind) && watched.contains(key)));
+    }
+
+    /**
+     * Main thread: the Watchlist row from Trakt again (its shows with new episodes, then the watchlist), and what the
+     * person has watched (the other rows may lose some, or get a show back), apart from io.
+     */
     private void loadWatchlist() {
         if (watchLoading || !Trakt.hasOAuth()) return;
         watchLoading = true;
@@ -772,7 +814,7 @@ final class Recs {
             watchRow(null);
             main.post(() -> {
                 watchLoading = false;
-                refill(WATCHLIST);
+                for (String kind : new String[] {null, "movie", "tv", WATCHLIST}) refill(kind);
                 notifyListeners();
                 io.execute(this::save);
             });
@@ -782,13 +824,24 @@ final class Recs {
     /**
      * The Watchlist row's titles from Trakt: the shows with episodes out since the person last watched (newest first),
      * then their watchlist (latest added first). The ones not known yet go to the queue (or, while the list is being
-     * made, into `candidates`). If Trakt can't be asked, the row keeps what it had.
+     * made, into `candidates`). With them, what the person has watched. If Trakt can't be asked, all stay as they were.
      */
     private void watchRow(List<Pick> candidates) {
-        if (!Trakt.hasOAuth()) return;
+        if (!Trakt.hasOAuth()) {   // signed out: nobody's history hides anything
+            watched = new HashSet<>();
+            marked.clear();
+            return;
+        }
         try {
-            List<Trakt.Unwatched> fresh = Trakt.newEpisodes(System.currentTimeMillis());
+            long asked = System.currentTimeMillis();
+            Trakt.Watched seen = Trakt.watched(asked);
+            List<Trakt.Unwatched> fresh = seen.fresh;
             List<Trakt.Item> listed = Trakt.watchlist();
+            Set<String> done = new HashSet<>();
+            for (int id : seen.movies) done.add("movie:" + id);
+            for (int id : seen.shows) done.add("tv:" + id);
+            watched = done;
+            marked.values().removeIf(at -> at < asked - SETTLE);
             List<Pick> found = new ArrayList<>();
             Map<String, Integer> counts = new HashMap<>();
             Set<String> keys = new HashSet<>();
@@ -806,7 +859,8 @@ final class Recs {
             watchlist = keys;
             newEpisodes = counts;
             rowTitles.put(WATCHLIST, row);
-            AppLog.w("Trakt watchlist: " + listed.size() + " titles, " + fresh.size() + " shows with new episodes");
+            AppLog.w("Trakt watchlist: " + listed.size() + " titles, " + fresh.size() + " shows with new episodes; watched: "
+                    + seen.movies.size() + " movies, " + seen.shows.size() + " shows seen through");
         } catch (IOException e) {
             AppLog.w("Trakt watchlist: " + e.getMessage());
         }
@@ -945,6 +999,7 @@ final class Recs {
     }
 
     private boolean visible(Pick p, String kind, Map<String, Boolean> have) {
+        if (seenOut(key(p), kind)) return false;
         if (WATCHLIST.equals(kind) && away(p)) return true;   // the watchlist has it all, marked when no app has it
         return (!FILMIX_ONLY || filmixPick(p)) && (kind == null || kind.equals(WATCHLIST) || kind.equals(p.kind))
                 && (WATCHLIST.equals(kind) || !hidden.contains(key(p)))
@@ -1026,13 +1081,16 @@ final class Recs {
     private Pick next(List<Pick> list, String kind, boolean take) {
         List<String> keys = rowTitles.get(titlesKey(kind));
         if (keys == null && ownTitles(kind)) return null;   // its titles aren't in yet
-        int at = -1;
+        int at = -1;   // a watched one is skipped: not looked up for a row that wouldn't show it
         if (keys == null) {
-            for (int i = 0; i < list.size() && at < 0; i++) if (inRow(list.get(i), kind, null)) at = i;
+            for (int i = 0; i < list.size() && at < 0; i++) {
+                if (inRow(list.get(i), kind, null) && !seenOut(key(list.get(i)), kind)) at = i;
+            }
         } else {
             Map<String, Integer> index = new HashMap<>();
             for (int i = 0; i < list.size(); i++) index.put(key(list.get(i)), i);
             for (int i = 0; i < keys.size() && at < 0; i++) {
+                if (seenOut(keys.get(i), kind)) continue;
                 Integer found = index.get(keys.get(i));
                 if (found != null) at = found;
             }
@@ -1105,11 +1163,12 @@ final class Recs {
         if (keys == null && ownTitles(kind)) return 0;
         int n = 0;
         if (keys == null) {
-            for (Pick p : list) if (inRow(p, kind, null)) n++;
+            for (Pick p : list) if (inRow(p, kind, null) && !seenOut(key(p), kind)) n++;
             return n;
         }
         Set<String> have = keys(list), waiting = keys(rest);
         for (String k : keys) {
+            if (seenOut(k, kind)) continue;
             if (have.contains(k)) n++;
             else if (waiting.contains(k)) break;
         }
@@ -2462,7 +2521,8 @@ final class Recs {
             }
             e.putString("rows", rows.toString());
             e.putString("watch", new JSONObject().put("listed", new JSONArray(watchlist))
-                    .put("new", new JSONObject(newEpisodes)).put("at", watchAt).toString());
+                    .put("new", new JSONObject(newEpisodes)).put("at", watchAt)
+                    .put("watched", new JSONArray(watched)).put("marked", new JSONObject(marked)).toString());
             // Watchmode links of titles no longer in the list go (the refused-key mark stays).
             Set<String> keep = new HashSet<>();
             for (Pick p : picks) keep.add(linkKey(p));
