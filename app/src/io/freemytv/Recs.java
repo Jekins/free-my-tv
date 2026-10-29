@@ -466,6 +466,7 @@ final class Recs {
     private volatile long listAt;
     private volatile boolean fetching;
     private volatile String error = "";
+    private volatile boolean filmixDown;   // the last list couldn't be made: Filmix's search didn't answer
     private volatile boolean light;     // light design: builds only the cards (all three tabs' cards fit in memory)
     private volatile long failedAt, keyStamp, linkRetryAt;
     private volatile String listLanguage = "";   // language used for the saved titles, genres and texts
@@ -647,7 +648,8 @@ final class Recs {
         if (SEARCH.equals(kind)) return new ArrayList<>(found);
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
-        if (FILMIX_ONLY && !filmixCurrent()) return list;
+        // An older list Filmix confirmed stays until a new one replaces it: after a night in standby the refresh takes
+        // a while, or fails until Filmix is opened once (its search, started cold, has no server address).
         int max = shown[row(kind)];
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
         for (Pick p : order(kind)) {
@@ -945,7 +947,7 @@ final class Recs {
      * looked up) gets them now, not only once the focus reaches its end. A lookup that fails waits for the next time.
      */
     void fill() {
-        if (fetching || !hasKey(context) || (FILMIX_ONLY && !filmixCurrent())) return;
+        if (fetching || !hasKey(context)) return;
         for (String kind : new String[] {null, "movie", "tv", WATCHLIST}) refill(kind);
     }
 
@@ -1052,7 +1054,7 @@ final class Recs {
 
     /** The row has more to show: cards already confirmed, or titles still waiting in the queue. */
     boolean hasMore(String kind) {
-        if (!hasKey(context) || (FILMIX_ONLY && !filmixCurrent())) return false;
+        if (!hasKey(context)) return false;
         return count(kind) > shown[row(kind)] || queued(kind);
     }
 
@@ -1443,9 +1445,11 @@ final class Recs {
                 if (tried > 0 && failures == tried) throw new IOException(last);
                 error = "";
                 failedAt = 0;
+                filmixDown = false;
             } catch (Exception e) {
                 error = e.getMessage() == null ? e.toString() : e.getMessage();
                 failedAt = System.currentTimeMillis();
+                filmixDown = Filmix.UNAVAILABLE.equals(error);
                 AppLog.w("recommendations: " + error);
             } finally {
                 fetching = false;
@@ -1471,7 +1475,6 @@ final class Recs {
     List<Pick> showcase() {
         List<Pick> out = new ArrayList<>();
         if (!hasKey(context)) return out;
-        if (FILMIX_ONLY && !filmixCurrent()) return out;
         java.util.Set<String> seen = new java.util.HashSet<>();
         for (Pick p : wanted()) if (hasImage(p) && seen.add(franchise(p.title))) out.add(p);
         Map<String, Boolean> have = new HashMap<>();
@@ -1801,14 +1804,19 @@ final class Recs {
         return p.detailed && "filmix".equals(p.app) && Filmix.PKG.equals(p.pkg) && p.link != null;
     }
 
-    private boolean filmixCurrent() {
-        long age = System.currentTimeMillis() - listAt;
-        return listAt > 0 && age >= 0 && age <= LIST_EVERY;
-    }
-
     /** TMDB supplies discovery and artwork; only exact matches confirmed by Filmix reach the screen. */
     private void fetchFilmixList(int period) throws Exception {
         if (!installed(Filmix.PKG)) throw new IOException(Filmix.UNAVAILABLE);
+        // Filmix's search, started cold (its process let go in standby), has no server address until Filmix is opened.
+        // After that failure, one title it had is asked first: until it answers, Trakt isn't asked for everything again
+        // every minute.
+        List<Pick> had = picks;
+        if (filmixDown && !had.isEmpty()) {
+            Pick known = had.get(0);
+            synchronized (FILMIX) {
+                Filmix.find(context, known.title, known.originalTitle, known.year, "tv".equals(known.kind));
+            }
+        }
         List<Pick> movies = new ArrayList<>(), shows = new ArrayList<>();
         // The person's own list for a tab, else Trakt's recommendations (or the lists built in), else TMDB's trending.
         List<Trakt.Item> movieList = ownList("movie"), showList = ownList("tv");
